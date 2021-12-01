@@ -33,7 +33,7 @@ type RedirectTCPHandshaker struct {
 	net.Conn
 }
 
-func (c *RedirectTCPHandshaker) Handshake() (conn net.Conn, raddr *net.TCPAddr, err error) {
+func (c *RedirectTCPHandshaker) Handshake() (conn net.Conn, raddr net.Addr, err error) {
 	defer func() {
 		if err != nil {
 			glog.Info("close connection")

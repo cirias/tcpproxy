@@ -24,11 +24,11 @@ type Listener interface {
 
 type Handshaker interface {
 	net.Conn
-	Handshake() (net.Conn, *net.TCPAddr, error)
+	Handshake() (net.Conn, net.Addr, error)
 }
 
 type Dialer interface {
-	Dial(raddr *net.TCPAddr) (net.Conn, error)
+	Dial(raddr net.Addr) (net.Conn, error)
 }
 
 type RoundTripper struct {

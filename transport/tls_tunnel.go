@@ -1,7 +1,6 @@
 package transport
 
 import (
-	"crypto/sha256"
 	"crypto/tls"
 	"crypto/x509"
 	"fmt"
@@ -66,11 +65,8 @@ func ListenTLSTunnel(secret, laddr string, config *tls.Config) (*TunnelListener,
 
 	tl := &TunnelListener{
 		listener: &TLSListener{listener.(*net.TCPListener), config},
+		secret:   secret,
 	}
-
-	h := sha256.New()
-	h.Write([]byte(secret))
-	copy(tl.secretHash[:], h.Sum(nil))
 
 	return tl, nil
 }
@@ -138,13 +134,9 @@ func NewTLSTunnelDialerWithCert(secret, laddr, raddr, serverName string, caCertB
 		dialer.NetDialer.LocalAddr = addr
 	}
 
-	td := &TunnelDialer{}
-	td.netDialer = dialer
-	td.serverAddr = raddr
-
-	h := sha256.New()
-	h.Write([]byte(secret))
-	copy(td.secretHash[:], h.Sum(nil))
-
-	return td, nil
+	return &TunnelDialer{
+		netDialer:  dialer,
+		serverAddr: raddr,
+		secret:     secret,
+	}, nil
 }

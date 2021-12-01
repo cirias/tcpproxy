@@ -129,11 +129,11 @@ yWjChbbGsQ==
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !raddr.IP.Equal(testAddr.IP) {
-		t.Fatal("wrong handshake raddr IP", raddr.IP)
+	if raddr.Network() != testAddr.Network() {
+		t.Fatal("wrong handshake raddr network", raddr.Network())
 	}
-	if raddr.Port != testAddr.Port {
-		t.Fatal("wrong handshake raddr port", raddr.Port)
+	if raddr.String() != testAddr.String() {
+		t.Fatal("wrong handshake raddr address", raddr.String())
 	}
 
 	b := make([]byte, 4096)

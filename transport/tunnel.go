@@ -1,13 +1,14 @@
 package transport
 
 import (
+	"bufio"
 	"bytes"
 	"context"
 	"crypto/tls"
-	"encoding/binary"
 	"fmt"
 	"io"
 	"net"
+	"strings"
 	"sync"
 	"time"
 
@@ -15,60 +16,74 @@ import (
 )
 
 type TunnelInitialPacket struct {
-	SecretHash [64]byte
-	DstAddr    net.TCPAddr
-	Payload    []byte
+	Secret  string
+	DstAddr net.Addr
+	Payload []byte
 }
 
 func (pkt *TunnelInitialPacket) Decode(r io.Reader) error {
-	if _, err := io.ReadFull(r, pkt.SecretHash[:]); err != nil {
-		return fmt.Errorf("could not read secret hash: %w", err)
+	s := bufio.NewScanner(r)
+
+	s.Split(func(data []byte, atEOF bool) (int, []byte, error) {
+		advance, token, err := bufio.ScanLines(data, atEOF)
+		// a little hack to get the remining buffered bytes
+		pkt.Payload = data[advance:]
+		return advance, token, err
+	})
+
+	{
+		if ok := s.Scan(); !ok {
+			return fmt.Errorf("scan ended while reading secret hash")
+		}
+		line := s.Text()
+
+		if strings.HasSuffix(line, " HTTP/1.1") || strings.HasSuffix(line, " HTTP/2.0") {
+			return fmt.Errorf("http preface received")
+		}
+		pkt.Secret = line
 	}
 
-	var iplenBuf [1]byte
-	if _, err := io.ReadFull(r, iplenBuf[:]); err != nil {
-		return fmt.Errorf("could not read IP length: %w", err)
-	}
+	{
+		if ok := s.Scan(); !ok {
+			return fmt.Errorf("scan ended while reading destination address")
+		}
+		line := s.Bytes()
 
-	iplen := int(iplenBuf[0])
-	if iplen != net.IPv4len && iplen != net.IPv6len {
-		return fmt.Errorf("invalid length of IP address: %d", iplen)
-	}
+		i := bytes.IndexByte(line, ':')
+		if i < 0 {
+			return fmt.Errorf("could not find ':' in line: %s", line)
+		}
 
-	pkt.DstAddr.IP = make([]byte, iplen)
-	if _, err := io.ReadFull(r, pkt.DstAddr.IP); err != nil {
-		return fmt.Errorf("could not read IP: %w", err)
+		network := string(line[:i])
+		address := string(line[i+1:])
+		switch network {
+		case "tcp", "tcp4", "tcp6":
+			addr, err := net.ResolveTCPAddr(network, address)
+			if err != nil {
+				return fmt.Errorf("could not resolve TCP address (%s, %s): %w", network, address, err)
+			}
+			pkt.DstAddr = addr
+		case "udp", "udp4", "udp6":
+			addr, err := net.ResolveUDPAddr(network, address)
+			if err != nil {
+				return fmt.Errorf("could not resolve UDP address (%s, %s): %w", network, address, err)
+			}
+			pkt.DstAddr = addr
+		default:
+			return fmt.Errorf("unknown network: %s", network)
+		}
 	}
-
-	var uPort uint16
-	if err := binary.Read(r, binary.BigEndian, &uPort); err != nil {
-		return fmt.Errorf("could not read port: %w", err)
-	}
-	pkt.DstAddr.Port = int(uPort)
 
 	return nil
 }
 
 func (pkt *TunnelInitialPacket) Encode(w io.Writer) error {
-	if _, err := w.Write(pkt.SecretHash[:]); err != nil {
+	if _, err := w.Write([]byte(pkt.Secret + "\r\n")); err != nil {
 		return fmt.Errorf("could not write secret hash: %w", err)
 	}
 
-	iplen := len(pkt.DstAddr.IP)
-	if iplen != net.IPv4len && iplen != net.IPv6len {
-		return fmt.Errorf("invalid length of IP address: %d", iplen)
-	}
-
-	if _, err := w.Write([]byte{byte(iplen)}); err != nil {
-		return fmt.Errorf("could not write IP length: %w", err)
-	}
-
-	if _, err := w.Write(pkt.DstAddr.IP); err != nil {
-		return fmt.Errorf("could not write IP address: %w", err)
-	}
-
-	if err := binary.Write(w, binary.BigEndian, uint16(pkt.DstAddr.Port)); err != nil {
-		return fmt.Errorf("could not write port: %w", err)
+	if _, err := w.Write([]byte(pkt.DstAddr.Network() + ":" + pkt.DstAddr.String() + "\r\n")); err != nil {
+		return fmt.Errorf("could not write destination address: %w", err)
 	}
 
 	if _, err := w.Write(pkt.Payload); err != nil {
@@ -79,8 +94,8 @@ func (pkt *TunnelInitialPacket) Encode(w io.Writer) error {
 }
 
 type TunnelListener struct {
-	listener   net.Listener
-	secretHash [64]byte
+	listener net.Listener
+	secret   string
 }
 
 func (l *TunnelListener) Accept() (Handshaker, error) {
@@ -89,7 +104,7 @@ func (l *TunnelListener) Accept() (Handshaker, error) {
 		return nil, fmt.Errorf("could not accept tls connection: %w", err)
 	}
 
-	return &TunnelServerHandshaker{conn, &l.secretHash}, nil
+	return &TunnelServerHandshaker{conn, l.secret}, nil
 }
 
 func (l *TunnelListener) Close() error {
@@ -104,10 +119,33 @@ var DefaultHandshakeTimeout = 5 * time.Second
 
 type TunnelServerHandshaker struct {
 	net.Conn
-	secretHash *[64]byte
+	secret string
 }
 
-func (c *TunnelServerHandshaker) Handshake() (conn net.Conn, raddr *net.TCPAddr, err error) {
+type TunnelServerConn struct {
+	net.Conn
+	buf *bytes.Buffer
+}
+
+func (c *TunnelServerConn) Read(b []byte) (int, error) {
+	// FIXME concurrency safe
+	if c.buf != nil {
+		n, err := c.buf.Read(b)
+		if err == nil {
+			return n, nil
+		}
+
+		if err != io.EOF {
+			return n, err
+		}
+
+		c.buf = nil
+	}
+
+	return c.Conn.Read(b)
+}
+
+func (c *TunnelServerHandshaker) Handshake() (conn net.Conn, raddr net.Addr, err error) {
 	tlsConn := c.Conn.(*tls.Conn)
 	if tlsConn != nil {
 		ctx, cancel := context.WithTimeout(context.Background(), DefaultHandshakeTimeout)
@@ -129,20 +167,20 @@ func (c *TunnelServerHandshaker) Handshake() (conn net.Conn, raddr *net.TCPAddr,
 		return nil, nil, fmt.Errorf("could not decode initial packet: %w", err)
 	}
 
-	if bytes.Compare(pkt.SecretHash[:], c.secretHash[:]) != 0 {
-		return nil, nil, fmt.Errorf("invalid secret hash")
+	if pkt.Secret != c.secret {
+		return nil, nil, fmt.Errorf("invalid secret")
 	}
 
-	return c.Conn, &pkt.DstAddr, nil
+	return &TunnelServerConn{c.Conn, bytes.NewBuffer(pkt.Payload)}, pkt.DstAddr, nil
 }
 
 type TunnelDialer struct {
 	netDialer  NetDialer
 	serverAddr string
-	secretHash [64]byte
+	secret     string
 }
 
-func (d *TunnelDialer) Dial(raddr *net.TCPAddr) (net.Conn, error) {
+func (d *TunnelDialer) Dial(raddr net.Addr) (net.Conn, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), DefaultHandshakeTimeout)
 	defer cancel()
 
@@ -152,9 +190,9 @@ func (d *TunnelDialer) Dial(raddr *net.TCPAddr) (net.Conn, error) {
 	}
 
 	pkt := &TunnelInitialPacket{
-		SecretHash: d.secretHash,
-		DstAddr:    *raddr,
-		Payload:    nil,
+		Secret:  d.secret,
+		DstAddr: raddr,
+		Payload: nil,
 	}
 
 	return &TunnelClientConn{conn, pkt, sync.Once{}}, nil

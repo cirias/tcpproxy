@@ -168,6 +168,7 @@ type TunnelClientConn struct {
 
 func (c *TunnelClientConn) Write(b []byte) (int, error) {
 	var e error
+	var writePktSuccess bool
 	c.writePktOnce.Do(func() {
 		c.pkt.Payload = b
 
@@ -179,13 +180,16 @@ func (c *TunnelClientConn) Write(b []byte) (int, error) {
 
 		if _, err := c.Conn.Write(buf.Bytes()); err != nil {
 			e = fmt.Errorf("could not write initial packet to connection: %w", err)
+			return
 		}
+
+		c.pkt = nil
+		writePktSuccess = true
 	})
 	if e != nil {
 		return 0, e
 	}
-	if c.pkt != nil {
-		c.pkt = nil
+	if writePktSuccess {
 		return len(b), nil
 	}
 

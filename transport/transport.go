@@ -81,7 +81,7 @@ func (p *RoundTripper) handle(handshaker Handshaker) error {
 }
 
 func copyConn(prefix string, i, o net.Conn) error {
-	b := make([]byte, 8 * 1024)
+	b := make([]byte, 8*1024)
 	for {
 		glog.V(1).Infof("%s reading from %s", prefix, i.RemoteAddr())
 		n, err := i.Read(b)

@@ -10,6 +10,7 @@ import (
 
 var secret = flag.String("secret", "", "secret shared with client")
 var laddr = flag.String("laddr", "0.0.0.0:443", "local listening address")
+var faddr = flag.String("faddr", "", "fallback http server address")
 var cert = flag.String("cert", "", "path of the cert file")
 var key = flag.String("key", "", "path of the cert key file")
 var cacert = flag.String("cacert", "", "path of the CA cert file for verify client cert (optional)")
@@ -17,7 +18,7 @@ var cacert = flag.String("cacert", "", "path of the CA cert file for verify clie
 func main() {
 	flag.Parse()
 
-	listener, err := transport.ListenTLSTunnelWithCertFile(*secret, *laddr, *cert, *key, *cacert)
+	listener, err := transport.ListenTLSTunnelWithCertFile(*secret, *laddr, *faddr, *cert, *key, *cacert)
 	if err != nil {
 		glog.Fatalln(err)
 	}

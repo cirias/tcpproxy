@@ -21,11 +21,26 @@ type TunnelInitialPacket struct {
 	Payload []byte
 }
 
-func (pkt *TunnelInitialPacket) Decode(r io.Reader) error {
-	s := bufio.NewScanner(r)
+type decodeError struct {
+	error
+	scanned *bytes.Buffer
+}
 
+func (pkt *TunnelInitialPacket) Decode(r io.Reader) (err error) {
+	scanned := new(bytes.Buffer)
+	defer func() {
+		if err != nil {
+			_, _ = scanned.Write(pkt.Payload)
+			err = &decodeError{err, scanned}
+		}
+	}()
+
+	s := bufio.NewScanner(r)
 	s.Split(func(data []byte, atEOF bool) (int, []byte, error) {
 		advance, token, err := bufio.ScanLines(data, atEOF)
+
+		_, _ = scanned.Write(data[:advance])
+
 		// a little hack to get the remining buffered bytes
 		pkt.Payload = data[advance:]
 		return advance, token, err
@@ -94,8 +109,9 @@ func (pkt *TunnelInitialPacket) Encode(w io.Writer) error {
 }
 
 type TunnelListener struct {
-	listener net.Listener
-	secret   string
+	listener     net.Listener
+	secret       string
+	fallbackAddr net.Addr
 }
 
 func (l *TunnelListener) Accept() (Handshaker, error) {
@@ -104,7 +120,7 @@ func (l *TunnelListener) Accept() (Handshaker, error) {
 		return nil, fmt.Errorf("could not accept tls connection: %w", err)
 	}
 
-	return &TunnelServerHandshaker{conn, l.secret}, nil
+	return &TunnelServerHandshaker{conn, l}, nil
 }
 
 func (l *TunnelListener) Close() error {
@@ -119,7 +135,42 @@ var DefaultHandshakeTimeout = 5 * time.Second
 
 type TunnelServerHandshaker struct {
 	net.Conn
-	secret string
+	listener *TunnelListener
+}
+
+func (c *TunnelServerHandshaker) Handshake() (conn net.Conn, raddr net.Addr, err error) {
+	tlsConn := c.Conn.(*tls.Conn)
+	if tlsConn != nil {
+		ctx, cancel := context.WithTimeout(context.Background(), DefaultHandshakeTimeout)
+		defer cancel()
+		if err := tlsConn.HandshakeContext(ctx); err != nil {
+			return nil, nil, fmt.Errorf("could not handshake TLS: %w", err)
+		}
+	}
+
+	defer func() {
+		if err != nil {
+			glog.Info("close connection")
+			_ = c.Conn.Close()
+		}
+	}()
+
+	pkt := new(TunnelInitialPacket)
+	if err := pkt.Decode(c.Conn); err != nil {
+		if pkt.Secret == c.listener.secret {
+			return nil, nil, fmt.Errorf("could not decode initial packet: %w", err)
+		}
+
+		glog.Infof("fallback %s -> %s: %s", c.Conn.RemoteAddr(), c.listener.fallbackAddr, err)
+		de := err.(*decodeError)
+		return &TunnelServerConn{c.Conn, de.scanned}, c.listener.fallbackAddr, nil
+	}
+
+	if pkt.Secret != c.listener.secret {
+		return nil, nil, fmt.Errorf("invalid secret")
+	}
+
+	return &TunnelServerConn{c.Conn, bytes.NewBuffer(pkt.Payload)}, pkt.DstAddr, nil
 }
 
 type TunnelServerConn struct {
@@ -143,35 +194,6 @@ func (c *TunnelServerConn) Read(b []byte) (int, error) {
 	}
 
 	return c.Conn.Read(b)
-}
-
-func (c *TunnelServerHandshaker) Handshake() (conn net.Conn, raddr net.Addr, err error) {
-	tlsConn := c.Conn.(*tls.Conn)
-	if tlsConn != nil {
-		ctx, cancel := context.WithTimeout(context.Background(), DefaultHandshakeTimeout)
-		defer cancel()
-		if err := tlsConn.HandshakeContext(ctx); err != nil {
-			return nil, nil, fmt.Errorf("could not handshake TLS: %w", err)
-		}
-	}
-
-	defer func() {
-		if err != nil {
-			glog.Info("close connection")
-			_ = c.Conn.Close()
-		}
-	}()
-
-	pkt := new(TunnelInitialPacket)
-	if err := pkt.Decode(c.Conn); err != nil {
-		return nil, nil, fmt.Errorf("could not decode initial packet: %w", err)
-	}
-
-	if pkt.Secret != c.secret {
-		return nil, nil, fmt.Errorf("invalid secret")
-	}
-
-	return &TunnelServerConn{c.Conn, bytes.NewBuffer(pkt.Payload)}, pkt.DstAddr, nil
 }
 
 type TunnelDialer struct {

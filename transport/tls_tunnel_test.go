@@ -84,7 +84,7 @@ yWjChbbGsQ==
 -----END CERTIFICATE-----
   `)
 
-	listener, err := ListenTLSTunnelWithCert(secret, "", certPEMBlock, keyPEMBlock, nil)
+	listener, err := ListenTLSTunnelWithCert(secret, "", "", certPEMBlock, keyPEMBlock, nil)
 	if err != nil {
 		t.Fatal(err)
 	}

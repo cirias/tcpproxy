@@ -11,7 +11,7 @@ import (
 
 var NextProtos = []string{"h2", "http/1.1"}
 
-func ListenTLSTunnelWithCertFile(secret, laddr, certFile, keyFile, caCertFile string) (*TunnelListener, error) {
+func ListenTLSTunnelWithCertFile(secret, laddr, faddr, certFile, keyFile, caCertFile string) (*TunnelListener, error) {
 	certPEMBlock, err := os.ReadFile(certFile)
 	if err != nil {
 		return nil, fmt.Errorf("could not read cert file %s: %w", certFile, err)
@@ -31,10 +31,10 @@ func ListenTLSTunnelWithCertFile(secret, laddr, certFile, keyFile, caCertFile st
 		}
 	}
 
-	return ListenTLSTunnelWithCert(secret, laddr, certPEMBlock, keyPEMBlock, caCertPEMBlock)
+	return ListenTLSTunnelWithCert(secret, laddr, faddr, certPEMBlock, keyPEMBlock, caCertPEMBlock)
 }
 
-func ListenTLSTunnelWithCert(secret, laddr string, certBlock, keyBlock, caCertBlock []byte) (*TunnelListener, error) {
+func ListenTLSTunnelWithCert(secret, laddr, faddr string, certBlock, keyBlock, caCertBlock []byte) (*TunnelListener, error) {
 	config := &tls.Config{
 		NextProtos: NextProtos,
 	}
@@ -54,18 +54,27 @@ func ListenTLSTunnelWithCert(secret, laddr string, certBlock, keyBlock, caCertBl
 		config.ClientCAs = clientCAs
 	}
 
-	return ListenTLSTunnel(secret, laddr, config)
+	return ListenTLSTunnel(secret, laddr, faddr, config)
 }
 
-func ListenTLSTunnel(secret, laddr string, config *tls.Config) (*TunnelListener, error) {
+func ListenTLSTunnel(secret, laddr, faddr string, config *tls.Config) (*TunnelListener, error) {
 	listener, err := net.Listen("tcp", laddr)
 	if err != nil {
 		return nil, fmt.Errorf("could not listen TLS: %w", err)
 	}
 
+	var fallbackAddr net.Addr
+	if faddr != "" {
+		fallbackAddr, err = net.ResolveTCPAddr("tcp", faddr)
+		if err != nil {
+			return nil, fmt.Errorf("could not resolve fallback address %s: %w", faddr, err)
+		}
+	}
+
 	tl := &TunnelListener{
-		listener: &TLSListener{listener.(*net.TCPListener), config},
-		secret:   secret,
+		listener:     &TLSListener{listener.(*net.TCPListener), config},
+		secret:       secret,
+		fallbackAddr: fallbackAddr,
 	}
 
 	return tl, nil

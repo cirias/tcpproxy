@@ -157,7 +157,7 @@ func (c *TunnelServerHandshaker) Handshake() (conn net.Conn, raddr net.Addr, err
 
 	pkt := new(TunnelInitialPacket)
 	if err := pkt.Decode(c.Conn); err != nil {
-		if pkt.Secret == c.listener.secret {
+		if pkt.Secret == c.listener.secret || c.listener.fallbackAddr == nil {
 			return nil, nil, fmt.Errorf("could not decode initial packet: %w", err)
 		}
 

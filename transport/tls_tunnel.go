@@ -6,8 +6,11 @@ import (
 	"fmt"
 	"net"
 	"os"
+	"syscall"
 	"time"
 )
+
+const tcpproxyBypassMark int = 0x00100
 
 var NextProtos = []string{"h2", "http/1.1"}
 
@@ -131,8 +134,19 @@ func NewTLSTunnelDialerWithCert(secret, laddr, raddr, serverName string, caCertB
 	}
 
 	dialer := &tls.Dialer{
-		NetDialer: &net.Dialer{},
-		Config:    config,
+		NetDialer: &net.Dialer{
+			Control: func(_, _ string, c syscall.RawConn) error {
+				var sockErr error
+				err := c.Control(func(fd uintptr) {
+					sockErr = syscall.SetsockoptInt(int(fd), syscall.SOL_SOCKET, syscall.SO_MARK, tcpproxyBypassMark)
+				})
+				if sockErr != nil {
+					return sockErr
+				}
+				return err
+			},
+		},
+		Config: config,
 	}
 
 	if laddr != "" {

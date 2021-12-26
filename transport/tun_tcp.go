@@ -9,11 +9,6 @@ import (
 
 	"golang.zx2c4.com/wireguard/tun"
 
-  /*
-   * "github.com/google/gopacket"
-   * "github.com/google/gopacket/layers"
-   */
-
 	"github.com/golang/glog"
 )
 
@@ -152,17 +147,6 @@ var emptyHardwareAddr = net.HardwareAddr{0,0,0,0,0,0}
  */
 
 func (l *TUNTCPListener) mapTCPPackets() error {
-  /*
-   * var ip4 layers.IPv4
-   * var tcp layers.TCP
-   * var payload gopacket.Payload
-   * decParser := gopacket.NewDecodingLayerParser(layers.LayerTypeIPv4, &ip4, &tcp, &payload)
-   * decParser.IgnoreUnsupported = true
-   * decLayerTypes := []gopacket.LayerType{}
-   * encBuf := gopacket.NewSerializeBuffer()
-   * encOpts := gopacket.SerializeOptions{ComputeChecksums: true}
-   */
-
 	buf := make([]byte, 4096)
   offset := 4
 	for {
@@ -232,80 +216,6 @@ func (l *TUNTCPListener) mapTCPPackets() error {
     if _, err := l.tun.Write(buf[:offset+n], offset); err != nil {
       return err
     }
-
-/*
- *     glog.V(2).Infof("read packet: %x ...", buf[offset:offset+16])
- *     if err := decParser.DecodeLayers(buf[offset:offset+n], &decLayerTypes); err != nil {
- *       return fmt.Errorf("could not decode layers: %w", err)
- *     }
- *     glog.V(2).Infof("decode packet: %v", decLayerTypes)
- * 
- *     if len(decLayerTypes) < 2 || decLayerTypes[1] != layers.LayerTypeTCP {
- *       // ignore ipv6 and non TCP packats
- *       continue
- *     }
- * 
- *     srcPort := uint16(tcp.SrcPort)
- *     dstPort := uint16(tcp.DstPort)
- * 
- *     if (ip4.SrcIP.Equal(l.tunIP) || ip4.SrcIP.Equal(l.laddr.IP)) && tcp.SrcPort == layers.TCPPort(l.laddr.Port) {
- *       l.originalDstsMutex.RLock()
- *       oaddr := l.originalDsts[dstPort]
- *       l.originalDstsMutex.RUnlock()
- *       if oaddr == nil {
- *         continue
- *       }
- * 
- *       ip4.SrcIP = oaddr.IP
- *       tcp.SrcPort = layers.TCPPort(oaddr.Port)
- *       ip4.DstIP = l.tunIP
- *     } else if ip4.SrcIP.Equal(l.tunIP) {
- *     if tcp.SYN && !tcp.ACK {
- *       l.connStates[srcPort] = TCPEstablished
- *       dst := make(net.IP, len(ip4.DstIP))
- *       copy(dst, ip4.DstIP)
- *       l.originalDstsMutex.Lock()
- *       l.originalDsts[srcPort] = &net.TCPAddr{IP: dst, Port: int(tcp.DstPort)}
- *       l.originalDstsMutex.Unlock()
- *     }
- * 
- *       ip4.SrcIP = l.fakeIP
- *       ip4.DstIP = l.laddr.IP
- *       tcp.DstPort = layers.TCPPort(l.laddr.Port)
- *     }
- * 
- *     if tcp.RST || tcp.ACK && l.connStates[srcPort] == TCPLastAck {
- *       delete(l.connStates, srcPort)
- *       l.originalDstsMutex.Lock()
- *       delete(l.originalDsts, srcPort)
- *       l.originalDstsMutex.Unlock()
- *     } else if tcp.FIN {
- *       switch l.connStates[srcPort] {
- *       case TCPEstablished:
- *         l.connStates[srcPort] = TCPFinWait
- *       case TCPFinWait:
- *         l.connStates[srcPort] = TCPLastAck
- *       }
- *     }
- * 
- *     if err := tcp.SetNetworkLayerForChecksum(&ip4); err != nil {
- *       return fmt.Errorf("could not set network layer for checksum: %w", err)
- *     }
- * 
- *     if err := gopacket.SerializeLayers(encBuf, encOpts,
- *       &layers.Ethernet{ DstMAC: emptyHardwareAddr, SrcMAC: emptyHardwareAddr },
- *       &ip4,
- *       &tcp,
- *       payload); err != nil {
- *       return fmt.Errorf("could not serialize packet: %w", err)
- *     }
- * 
- *     ethernetHeaderSize := 14
- *     if _, err := l.tun.Write(encBuf.Bytes(), ethernetHeaderSize); err != nil {
- *       return err
- *     }
- *     glog.V(2).Infof("write tcp packet: %x ...", encBuf.Bytes()[ethernetHeaderSize: ethernetHeaderSize+16])
- */
 	}
 }
 

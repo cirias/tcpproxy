@@ -4,7 +4,7 @@ import (
 	"context"
 	"fmt"
 	"net"
-	"time"
+	// "time"
 
 	"golang.org/x/sync/errgroup"
 
@@ -90,10 +90,12 @@ func copyConn(prefix string, i, o net.Conn) error {
 		}
 		glog.V(1).Infof("%s read bytes from %s: %d", prefix, i.RemoteAddr(), n)
 
-		// FIXME
-		if err := o.SetWriteDeadline(time.Now().Add(5 * time.Second)); err != nil {
-			return fmt.Errorf("%s could not set write deadline to %s: %w", prefix, i.RemoteAddr(), err)
-		}
+		/*
+		 * // FIXME
+		 * if err := o.SetWriteDeadline(time.Now().Add(5 * time.Second)); err != nil {
+		 *   return fmt.Errorf("%s could not set write deadline to %s: %w", prefix, i.RemoteAddr(), err)
+		 * }
+		 */
 
 		glog.V(1).Infof("%s writing to %s", prefix, o.RemoteAddr())
 		m, err := o.Write(b[:n])

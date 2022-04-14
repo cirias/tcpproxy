@@ -1,4 +1,4 @@
-.PHONY: build docker_image docker_run
+.PHONY: build test docker_image docker_run
 
 build:
 	CGO_ENABLED=0 go build ./cmd/tproxys

@@ -15,6 +15,9 @@ var cert = flag.String("cert", "", "path of the cert file")
 var key = flag.String("key", "", "path of the cert key file")
 var cacert = flag.String("cacert", "", "path of the CA cert file for verify client cert (optional)")
 
+var tname = flag.String("tun", "", "TUN device name")
+var tunip = flag.String("tunip", "", "TUN device IP address in CIDR")
+
 func main() {
 	flag.Parse()
 
@@ -23,9 +26,23 @@ func main() {
 		glog.Fatalln(err)
 	}
 
-	dialer := &transport.TCPDialer{}
+	tcpDialer := &transport.TCPDialer{}
+  var dialer transport.Dialer = tcpDialer
+  if *tunip != "" {
+    tun, err := transport.NewTUN(*tname, *tunip)
+    if err != nil {
+      glog.Fatal(err)
+    }
 
-	rt := &transport.RoundTripper{Listener: listener, Dialer: dialer}
+    ipDiailer := tun.NewIPDialer()
+
+    dialer = &transport.TUNTCPDialer{
+      TCP: tcpDialer,
+      IP: ipDiailer, 
+    }
+  }
+
+	rt := &transport.RoundTripper{Listeners: []transport.Listener{listener}, Dialer: dialer}
 
 	glog.Fatalln(rt.RoundTrip())
 }

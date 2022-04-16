@@ -17,27 +17,30 @@ import (
 	"github.com/cirias/tcpproxy/tcpip"
 )
 
-type TCPState byte
+type TCPState struct {
+	state byte
+	seq   int
+}
 
 var tunRouteTable = "400"
 
 const (
-	TCPEstablished TCPState = iota
+	TCPSynSent byte = 1 + iota
 	TCPFinWait
 	TCPLastAck
 )
 
-type TUNHelper struct {
-	tun            tun.Device
-	tunIP          net.IP
-  tunIPNet *net.IPNet
+type TUN struct {
+	tun      tun.Device
+	tunIP    net.IP
+	tunIPNet *net.IPNet
 }
 
-func NewTUNHelper(name, tunAddr string) (*TUNHelper, error) {
-  tunIP, tunIPNet, err := net.ParseCIDR(tunAddr)
-  if err != nil {
-    return nil, fmt.Errorf("could not parse tunAddr: %w", err)
-  }
+func NewTUN(name, tunAddr string) (*TUN, error) {
+	tunIP, tunIPNet, err := net.ParseCIDR(tunAddr)
+	if err != nil {
+		return nil, fmt.Errorf("could not parse tunAddr: %w", err)
+	}
 
 	tun, err := tun.CreateTUN(name, 1420)
 	if err != nil {
@@ -57,34 +60,43 @@ func NewTUNHelper(name, tunAddr string) (*TUNHelper, error) {
 		return nil, fmt.Errorf("could not set %s up: %w", tunName, err)
 	}
 
-	if err := exec.Command("ip", "rule", "add", "not", "fwmark", fmt.Sprint(tcpproxyBypassMark), "table", tunRouteTable).Run(); err != nil {
-		return nil, fmt.Errorf("could not set bypass rule: %w", err)
-	}
-
-	if err := exec.Command("ip", "route", "add", "default", "via", tunIP.String(), "dev", tunName, "src", tunIP.String(), "table", tunRouteTable).Run(); err != nil {
-		return nil, fmt.Errorf("could not set route table for tun device: %w", err)
-	}
-
-  return &TUNHelper{
-    tun: tun,
-    tunIP: tunIP,
-    tunIPNet: tunIPNet,
-  }, nil
+	return &TUN{
+		tun:      tun,
+		tunIP:    tunIP,
+		tunIPNet: tunIPNet,
+	}, nil
 }
 
-func (h *TUNHelper) ReadPackets(tcpl *TUNTCPListener, ipl *TUNIPListener) error {
-  defer func () {
-    if tcpl != nil {
-      close(tcpl.pktCh)
-    }
-    if ipl != nil {
-      close(ipl.pktCh)
-    }
-  }() 
+func (t *TUN) EnableDefaultRoute() error {
+  tunName, err := t.tun.Name()
+  if err != nil {
+    return fmt.Errorf("could not get name of tun: %w", err)
+  }
+
+	if err := exec.Command("ip", "rule", "add", "not", "fwmark", fmt.Sprint(tcpproxyBypassMark), "table", tunRouteTable).Run(); err != nil {
+		return fmt.Errorf("could not set bypass rule: %w", err)
+	}
+
+	if err := exec.Command("ip", "route", "add", "default", "via", t.tunIP.String(), "dev", tunName, "src", t.tunIP.String(), "table", tunRouteTable).Run(); err != nil {
+		return fmt.Errorf("could not set route table for tun device: %w", err)
+	}
+
+  return nil
+}
+
+func (t *TUN) ReadPackets(tcpl *TUNTCPListener, ipl *TUNIPListener) error {
+	defer func() {
+		if tcpl != nil {
+			close(tcpl.pktCh)
+		}
+		if ipl != nil {
+			close(ipl.pktCh)
+		}
+	}()
 
 	for {
 		buf := allocateBuffer()
-		if _, err := buf.ReadFrom(h.tun); err != nil {
+		if _, err := buf.ReadFrom(t.tun); err != nil {
 			return err
 		}
 
@@ -95,43 +107,52 @@ func (h *TUNHelper) ReadPackets(tcpl *TUNTCPListener, ipl *TUNIPListener) error 
 			continue
 		}
 
-    if tcpl != nil {
-      if ip4.Protocol() == tcpip.ProtocolTCP {
-        fmt.Println("read tcp")
-        tcpl.pktCh <- buf
-        continue
-      }
-    }
+		if tcpl != nil {
+			if ip4.Protocol() == tcpip.ProtocolTCP {
+				tcpl.pktCh <- buf
+				continue
+			}
+		}
 
-    if ipl != nil {
-      ipl.pktCh <- buf
-    }
+		if ipl != nil {
+			ipl.pktCh <- buf
+		}
 	}
 }
 
-func (h *TUNHelper) NewTCPListener(paddr, laddr string) (*TUNTCPListener, error) {
-	proxyIP := net.ParseIP(paddr)
-	if proxyIP == nil {
-		return nil, fmt.Errorf("could not parse paddr")
-	}
+func (t *TUN) NewTCPListener(paddr string, lport int) (*TUNTCPListener, error) {
+  var proxyIP net.IP
+  if paddr == "" {
+    tunip := t.tunIP.To4()
+    proxyIP = net.IPv4(tunip[0], tunip[1], tunip[2], tunip[3]+10)
+  } else {
+    proxyIP = net.ParseIP(paddr)
+    if proxyIP == nil {
+      return nil, fmt.Errorf("could not parse paddr")
+    }
+  }
 
-	if !h.tunIPNet.Contains(proxyIP) {
+	if !t.tunIPNet.Contains(proxyIP) {
 		return nil, fmt.Errorf("paddr is not within range of tunAddr")
 	}
 
-	listener, err := net.Listen("tcp", laddr)
+  laddr := &net.TCPAddr{
+    IP: t.tunIP,
+    Port: lport,
+  }
+  listener, err := net.ListenTCP("tcp", laddr)
 	if err != nil {
 		return nil, fmt.Errorf("could not create TCP listener: %w", err)
 	}
 
 	l := &TUNTCPListener{
-		listener:   listener,
-		tun:           h.tun,
-		tunIP:         h.tunIP,
-		proxyIP:      proxyIP,
+		listener:          listener,
+		tun:               t.tun,
+		tunIP:             t.tunIP,
+		proxyIP:           proxyIP,
 		mapSportDaddr:     make(map[uint16]*net.TCPAddr),
-		mapSportConnState: make(map[uint16]TCPState),
-    pktCh: make(chan *PacketBuf, 0),
+		mapSportConnState: make(map[uint16]*TCPState),
+		pktCh:             make(chan *PacketBuf, 0),
 	}
 	go func() {
 		if err := l.mapTCPPackets(); err != nil {
@@ -143,17 +164,24 @@ func (h *TUNHelper) NewTCPListener(paddr, laddr string) (*TUNTCPListener, error)
 }
 
 type TUNTCPListener struct {
-	tun            tun.Device
-	tunIP          net.IP
+	tun   tun.Device
+	tunIP net.IP
 
-	proxyIP       net.IP
-	listener    net.Listener
+	proxyIP  net.IP
+	listener net.Listener
 
-	mapSportDaddrMutex sync.RWMutex
-	mapSportDaddr      map[uint16]*net.TCPAddr // tcp src port -> dst address
-	mapSportConnState  map[uint16]TCPState
+  proxyToState  map[[4]byte]map[uint16]*TCPState 
 
-	pktCh    chan *PacketBuf
+  // src ip -> (src port -> dst address)
+  proxyToSrcDst      map[[4]byte]struct{
+    srcIP net.IP
+    portToDst map[uint16]*net.TCPAddr
+  }
+	sourcesMutex sync.RWMutex
+  srcToProxy      map[[4]byte]net.IP
+  
+
+	pktCh chan *PacketBuf
 }
 
 func (l *TUNTCPListener) Accept() (Handshaker, error) {
@@ -166,12 +194,7 @@ func (l *TUNTCPListener) Accept() (Handshaker, error) {
 }
 
 func (l *TUNTCPListener) Close() error {
-	err1 := l.tun.Close()
-	err2 := l.listener.Close()
-	if err1 != nil {
-		return err1
-	}
-	return err2
+	return l.listener.Close()
 }
 
 func (l *TUNTCPListener) Addr() net.Addr {
@@ -195,9 +218,9 @@ func (l *TUNTCPListener) mapTCPPackets() error {
 
 /*
  * Tun Device Address: 192.168.200.1/24
- * TCP Server Address: 127.0.0.1:12345
+ * TCP Server Address: 192.168.200.1:12345
  *
- * |--------| 192.168.200.1:56789 -> 1.1.1.1:443 |-----| 192.168.200.2:56789 -> 127.0.0.1:12345     |------------|
+ * |--------| 192.168.200.1:56789 -> 1.1.1.1:443 |-----| 192.168.200.2:56789 -> 192.168.200.1:12345 |------------|
  * | Client |                                    | Tun |                                            | TCP Server |
  * |--------| 192.168.200.1:56789 <- 1.1.1.1:443 |-----| 192.168.200.2:56789 <- 192.168.200.1:12345 |------------|
  */
@@ -222,7 +245,9 @@ func (l *TUNTCPListener) mapOneTCPPacket(buf *PacketBuf) error {
 	srcPort := tcp.SrcPort()
 	dstPort := tcp.DstPort()
 
-	if (srcIP.Equal(l.tunIP) || srcIP.Equal(laddr.IP)) && int(srcPort) == laddr.Port {
+	if srcIP.Equal(laddr.IP) && int(srcPort) == laddr.Port {
+		// translate packets came from TCP server
+		// NOTE: l.tunIP and laddr.IP are the same
 		l.mapSportDaddrMutex.RLock()
 		oaddr := l.mapSportDaddr[dstPort]
 		l.mapSportDaddrMutex.RUnlock()
@@ -230,13 +255,17 @@ func (l *TUNTCPListener) mapOneTCPPacket(buf *PacketBuf) error {
 			return nil
 		}
 
+		l.handleTermination(&tcp, dstPort, srcIP, srcPort)
+
 		ip4.SetSrcIP(oaddr.IP)
 		tcp.SetSrcPort(uint16(oaddr.Port))
 		ip4.SetDstIP(l.tunIP)
 	} else if srcIP.Equal(l.tunIP) {
+		// translate packets came from kernel TCP stack
 		if tcp.SYN() && !tcp.ACK() {
-      fmt.Println("establish", srcPort)
-			l.mapSportConnState[srcPort] = TCPEstablished
+			glog.Infof("initialize connection %s:%d to %s:%d", l.tunIP, srcPort, dstIP, dstPort)
+      ipbuf := [4]byte{srcIP[0], srcIP[1], srcIP[2], srcIP[3]}
+			l.mapSrcState[ipbuf][srcPort] = &TCPState{TCPSynSent, 0}
 			dst := make(net.IP, len(dstIP))
 			copy(dst, dstIP)
 			l.mapSportDaddrMutex.Lock()
@@ -244,26 +273,11 @@ func (l *TUNTCPListener) mapOneTCPPacket(buf *PacketBuf) error {
 			l.mapSportDaddrMutex.Unlock()
 		}
 
-    fmt.Println("map everything", l.proxyIP, laddr.IP, laddr.Port)
+		l.handleTermination(&tcp, srcPort, srcIP, srcPort)
+
 		ip4.SetSrcIP(l.proxyIP)
 		ip4.SetDstIP(laddr.IP)
 		tcp.SetDstPort(uint16(laddr.Port))
-	}
-
-	if tcp.RST() || tcp.ACK() && l.mapSportConnState[srcPort] == TCPLastAck {
-		l.mapSportDaddrMutex.Lock()
-		delete(l.mapSportDaddr, srcPort)
-		l.mapSportDaddrMutex.Unlock()
-
-		delete(l.mapSportConnState, srcPort)
-	} else if tcp.FIN() {
-		// FIXME check packet direction
-		switch l.mapSportConnState[srcPort] {
-		case TCPEstablished:
-			l.mapSportConnState[srcPort] = TCPFinWait
-		case TCPFinWait:
-			l.mapSportConnState[srcPort] = TCPLastAck
-		}
 	}
 
 	ip4.UpdateChecksum()
@@ -271,6 +285,32 @@ func (l *TUNTCPListener) mapOneTCPPacket(buf *PacketBuf) error {
 
 	_, err := buf.WriteTo(l.tun)
 	return err
+}
+
+func (l *TUNTCPListener) handleTermination(tcp *tcpip.TCPPacket, port uint16, srcIP net.IP, srcPort uint16) {
+	s := l.mapSportConnState[port]
+	if s == nil {
+		return
+	}
+
+	if tcp.RST() || tcp.ACK() && s.state == TCPLastAck && tcp.ACKNum() == s.seq+1 {
+		glog.Infof("terminate connection from %s:%d", l.tunIP, port)
+		l.mapSportDaddrMutex.Lock()
+		delete(l.mapSportDaddr, port)
+		l.mapSportDaddrMutex.Unlock()
+
+		delete(l.mapSportConnState, port)
+	} else if tcp.FIN() {
+		glog.V(1).Infof("FIN from %s:%d", srcIP, srcPort)
+
+		switch s.state {
+		case TCPSynSent:
+			s.state = TCPFinWait
+		case TCPFinWait:
+			s.state = TCPLastAck
+			s.seq = tcp.SeqNum()
+		}
+	}
 }
 
 type TUNTCPHandshaker struct {
@@ -288,46 +328,51 @@ func (h *TUNTCPHandshaker) Handshake() (conn net.Conn, raddr net.Addr, err error
 	return h.Conn, addr, nil
 }
 
-func (h *TUNHelper) IPListener() *TUNIPListener {
-  return &TUNIPListener{
-    tun: h.tun,
-    pktCh: make(chan *PacketBuf, 0),
-    mutex: &sync.Mutex{},
-  }
+func (t *TUN) NewIPListener() *TUNIPListener {
+	return &TUNIPListener{
+		tun:   t.tun,
+		pktCh: make(chan *PacketBuf, 0),
+		mutex: &sync.Mutex{},
+	}
 }
 
 type TUNIPListener struct {
-  tun tun.Device
-  pktCh chan *PacketBuf
-  mutex *sync.Mutex
+	tun   tun.Device
+	pktCh chan *PacketBuf
+	mutex *sync.Mutex
 }
 
 func (l *TUNIPListener) Accept() (Handshaker, error) {
-  l.mutex.Lock()
+	l.mutex.Lock()
 
-  buf, ok := <- l.pktCh
-  if !ok {
-    return nil, io.EOF
-  }
+	buf, ok := <-l.pktCh
+	if !ok {
+		return nil, io.EOF
+	}
 
-  return &TUNIPHandshaker{
-    Conn: &TUNIPConn{
-      mutex: l.mutex,
-      r: &PacketReader{
-        pktCh: l.pktCh,
-        firstPkt: buf,
-      },
-      w: l.tun,
-    },
-  }, nil
+	return &TUNIPHandshaker{
+		Conn: &TUNIPConn{
+			mutex: l.mutex,
+			r: &PacketReader{
+				pktCh:    l.pktCh,
+				firstPkt: buf,
+			},
+			w: l.tun,
+		},
+	}, nil
+}
+
+func (l *TUNIPListener) Close() error {
+	l.mutex.Lock()
+  return nil
 }
 
 type TUNIPHandshaker struct {
-  Conn *TUNIPConn
+	Conn *TUNIPConn
 }
 
 func (h *TUNIPHandshaker) RemoteAddr() net.Addr {
-  return h.Conn.RemoteAddr()
+	return h.Conn.RemoteAddr()
 }
 
 func (h *TUNIPHandshaker) Handshake() (conn net.Conn, raddr net.Addr, err error) {
@@ -336,46 +381,68 @@ func (h *TUNIPHandshaker) Handshake() (conn net.Conn, raddr net.Addr, err error)
 }
 
 type PacketReader struct {
-  pktCh <-chan *PacketBuf
-  firstPkt *PacketBuf
-  readFirstPktOnce sync.Once
+	pktCh            <-chan *PacketBuf
+	firstPkt         *PacketBuf
+	readFirstPktOnce sync.Once
 }
 
 func (r *PacketReader) Read(p []byte, offset int) (int, error) {
-  n := 0
-  r.readFirstPktOnce.Do(func () {
-    defer releaseBuffer(r.firstPkt)
-    n = copy(p[offset:], r.firstPkt.PacketBytes())
-    r.firstPkt = nil
-  })
-  if n > 0 {
-    return n, nil
-  }
+	n := 0
+	r.readFirstPktOnce.Do(func() {
+		defer releaseBuffer(r.firstPkt)
+		n = copy(p[offset:], r.firstPkt.PacketBytes())
+		r.firstPkt = nil
+	})
+	if n > 0 {
+		return n, nil
+	}
 
-  buf, ok := <-r.pktCh
-  if !ok {
-    return 0, io.EOF
-  }
-  defer releaseBuffer(buf)
-  
-  n = copy(p[offset:], buf.PacketBytes())
-  return n, nil
+	buf, ok := <-r.pktCh
+	if !ok {
+		return 0, io.EOF
+	}
+	defer releaseBuffer(buf)
+
+	n = copy(p[offset:], buf.PacketBytes())
+	return n, nil
+}
+
+func (t *TUN) NewIPDialer() *TUNIPDialer {
+	return &TUNIPDialer{
+		mutex: &sync.Mutex{},
+    tun: t.tun,
+	}
+}
+
+type TUNIPDialer struct {
+  tun tun.Device
+	mutex *sync.Mutex
+}
+
+func (d *TUNIPDialer) Dial(raddr net.Addr) (net.Conn, error) {
+  d.mutex.Lock()
+
+	return &TUNIPConn{
+		mutex: d.mutex,
+		r:   d.tun,
+    w: d.tun,
+	}, nil
 }
 
 type TUNIPConn struct {
-  mutex *sync.Mutex
+	mutex *sync.Mutex
 
-  r OffsetReader
-  w OffsetWriter
-  wbuf bytes.Buffer
+	r    OffsetReader
+	w    OffsetWriter
+	wbuf bytes.Buffer
 }
 
 func (c *TUNIPConn) Read(p []byte) (int, error) {
-  n, err := c.r.Read(p, 4)
-  p[2] = 0
-  p[3] = 0
-  binary.BigEndian.PutUint16(p[:2], uint16(n))
-  return n+4, err
+	n, err := c.r.Read(p, 4)
+	p[2] = 0
+	p[3] = 0
+	binary.BigEndian.PutUint16(p[:2], uint16(n))
+	return n + 4, err
 }
 
 func (c *TUNIPConn) Write(b []byte) (int, error) {
@@ -387,15 +454,15 @@ func (c *TUNIPConn) Write(b []byte) (int, error) {
 
 		n := int(binary.BigEndian.Uint16(c.wbuf.Bytes()[:2]))
 		if c.wbuf.Len() < 4+n {
-      break;
+			break
 		}
 
-		if _, err := c.w.Write(c.wbuf.Next(4 + n), 4); err != nil {
+		if _, err := c.w.Write(c.wbuf.Next(4+n), 4); err != nil {
 			return len(b), err
 		}
 	}
 
-  // TODO optimize
+	// TODO optimize
 	remain := c.wbuf.Bytes()
 	c.wbuf.Reset()
 	c.wbuf.Write(remain)
@@ -404,8 +471,8 @@ func (c *TUNIPConn) Write(b []byte) (int, error) {
 }
 
 func (c *TUNIPConn) Close() error {
-  c.mutex.Unlock()
-  return nil
+	c.mutex.Unlock()
+	return nil
 }
 
 func (c *TUNIPConn) LocalAddr() net.Addr {
@@ -431,7 +498,7 @@ func (c *TUNIPConn) SetWriteDeadline(t time.Time) error {
 type TUNAddr struct{}
 
 func (a *TUNAddr) Network() string {
-	return "tun_net"
+	return "tun_if"
 }
 
 func (a *TUNAddr) String() string {
@@ -445,7 +512,7 @@ func (a *TUNRemoteAddr) Network() string {
 }
 
 func (a *TUNRemoteAddr) String() string {
-	return "tun_remote"
+	return "kernel/tun"
 }
 
 type TUNLocalAddr struct{}
@@ -455,7 +522,7 @@ func (a *TUNLocalAddr) Network() string {
 }
 
 func (a *TUNLocalAddr) String() string {
-	return "tun_local"
+	return "user/tun"
 }
 
 var tunRemoteAddr = &TUNRemoteAddr{}

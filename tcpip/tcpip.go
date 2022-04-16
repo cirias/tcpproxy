@@ -121,13 +121,23 @@ func (p TCPPacket) ACK() bool {
 	return p[13]&0x10 != 0
 }
 
+func (p TCPPacket) SeqNum() int {
+	return int(p[4])<<24 + int(p[5])<<16 + int(p[6])<<8 + int(p[7])
+}
+
+func (p TCPPacket) ACKNum() int {
+	return int(p[8])<<24 + int(p[9])<<16 + int(p[10])<<8 + int(p[11])
+}
+
 func (p TCPPacket) UpdateChecksum(ip IPv4Packet) {
 	p[16] = 0
 	p[17] = 0
 
 	csum := ip.pseudoheaderChecksum()
-	length := uint32(len(p))
+
 	csum += uint32(ProtocolTCP)
+	length := uint32(len(p))
+
 	csum += length & 0xffff
 	csum += length >> 16
 	binary.BigEndian.PutUint16(p[16:], tcpipChecksum(p, csum))
@@ -165,15 +175,12 @@ var defaultIPv4Header []byte = []byte{
 	0x00, 0x00, // Head Checksum
 }
 
-func NewUDPPacket(buf []byte, src, dst net.IP, srcPort, dstPort uint16, payload []byte) UDPPacket {
+func NewUDPPacket(buf []byte, src, dst net.IP, srcPort, dstPort uint16, payload []byte) int {
 	if len(src) != 4 || len(dst) != 4 {
 		// only ipv4 is supported
-		return nil
+		return 0
 	}
 
-	copy(buf, defaultIPv4Header)
-	copy(buf[12:], src)
-	copy(buf[16:], dst)
 	buf[20] = byte(srcPort >> 8)
 	buf[21] = byte(srcPort)
 	buf[22] = byte(dstPort >> 8)
@@ -181,10 +188,21 @@ func NewUDPPacket(buf []byte, src, dst net.IP, srcPort, dstPort uint16, payload 
 	udpLength := 8 + len(payload)
 	buf[24] = byte(udpLength >> 8)
 	buf[25] = byte(udpLength)
+
+	copy(buf, defaultIPv4Header)
+  ip4 := IPv4Packet(buf)
+  ipLen := 20 + udpLength
+  buf[2] = byte(ipLen >> 8)
+  buf[3] = byte(ipLen)
+  ip4.SetSrcIP(src)
+  ip4.SetDstIP(dst)
+  ip4.UpdateChecksum()
+
+  // UDP checksum is optional for IPv4
 	buf[26] = 0
 	buf[27] = 0
 	copy(buf[28:], payload)
-	return buf[:28+len(payload)]
+	return 28+len(payload)
 }
 
 // Calculate the TCP/IP checksum defined in rfc1071.  The passed-in csum is any

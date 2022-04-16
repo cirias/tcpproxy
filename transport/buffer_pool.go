@@ -37,10 +37,10 @@ func (pb *PacketBuf) ReadFrom(tun tun.Device) (int, error) {
 }
 
 func (pb *PacketBuf) WriteTo(tun tun.Device) (int, error) {
-  n, err := tun.Write(pb.buf[:pb.offset+pb.n], pb.offset)
+	n, err := tun.Write(pb.buf[:pb.offset+pb.n], pb.offset)
 	return n, err
 }
 
 func (pb *PacketBuf) PacketBytes() []byte {
-	return pb.buf[pb.offset:pb.offset+pb.n]
+	return pb.buf[pb.offset : pb.offset+pb.n]
 }

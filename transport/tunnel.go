@@ -78,12 +78,8 @@ func (pkt *TunnelInitialPacket) Decode(r io.Reader) (err error) {
 				return fmt.Errorf("could not resolve TCP address (%s, %s): %w", network, address, err)
 			}
 			pkt.DstAddr = addr
-		case "udp", "udp4", "udp6":
-			addr, err := net.ResolveUDPAddr(network, address)
-			if err != nil {
-				return fmt.Errorf("could not resolve UDP address (%s, %s): %w", network, address, err)
-			}
-			pkt.DstAddr = addr
+		case "tun_if":
+      pkt.DstAddr = &TUNAddr{}
 		default:
 			return fmt.Errorf("unknown network: %s", network)
 		}
@@ -150,7 +146,6 @@ func (c *TunnelServerHandshaker) Handshake() (conn net.Conn, raddr net.Addr, err
 
 	defer func() {
 		if err != nil {
-			glog.Info("close connection")
 			_ = c.Conn.Close()
 		}
 	}()

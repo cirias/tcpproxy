@@ -3,8 +3,6 @@ package transport
 import (
 	"fmt"
 	"net"
-
-	"github.com/golang/glog"
 )
 
 type RedirectTCPListener struct {
@@ -36,7 +34,6 @@ type RedirectTCPHandshaker struct {
 func (c *RedirectTCPHandshaker) Handshake() (conn net.Conn, raddr net.Addr, err error) {
 	defer func() {
 		if err != nil {
-			glog.Info("close connection")
 			_ = c.Conn.Close()
 		}
 	}()

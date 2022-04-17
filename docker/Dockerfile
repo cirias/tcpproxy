@@ -9,7 +9,8 @@ RUN apt-get update && \
     curl \
     tcpdump \
     iperf3 \
-    procps
+    procps \
+    make
 
 COPY entrypoint.sh /
 ENTRYPOINT ["/entrypoint.sh"]

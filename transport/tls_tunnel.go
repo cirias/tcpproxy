@@ -8,6 +8,8 @@ import (
 	"os"
 	"syscall"
 	"time"
+
+	"github.com/golang/glog"
 )
 
 const tcpproxyBypassMark int = 0x00100
@@ -79,6 +81,8 @@ func ListenTLSTunnel(secret, laddr, faddr string, config *tls.Config) (*TunnelLi
 		secret:       secret,
 		fallbackAddr: fallbackAddr,
 	}
+
+  glog.Infof("created Tunnel listener on %s", listener.Addr())
 
 	return tl, nil
 }
@@ -156,6 +160,8 @@ func NewTLSTunnelDialerWithCert(secret, laddr, raddr, serverName string, caCertB
 		}
 		dialer.NetDialer.LocalAddr = addr
 	}
+
+  glog.Infof("created Tunnel dialer to %s", raddr)
 
 	return &TunnelDialer{
 		netDialer:  dialer,

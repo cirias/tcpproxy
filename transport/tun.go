@@ -32,7 +32,7 @@ const (
 )
 
 type TUN struct {
-  name     string
+	name     string
 	tun      tun.Device
 	tunIP    net.IP
 	tunIPNet *net.IPNet
@@ -62,10 +62,10 @@ func NewTUN(name, tunAddr string) (*TUN, error) {
 		return nil, fmt.Errorf("could not set %s up: %w", tunName, err)
 	}
 
-  glog.Infof("created TUN device %s at %s", tunName, tunIP)
+	glog.Infof("created TUN device %s at %s", tunName, tunIP)
 
 	return &TUN{
-    name: tunName,
+		name:     tunName,
 		tun:      tun,
 		tunIP:    tunIP,
 		tunIPNet: tunIPNet,
@@ -81,7 +81,7 @@ func (t *TUN) EnableDefaultRoute() error {
 		return fmt.Errorf("could not set route table for tun device: %w", err)
 	}
 
-  glog.Infof("enabled default route to %s", t.name)
+	glog.Infof("enabled default route to %s", t.name)
 
 	return nil
 }
@@ -165,7 +165,7 @@ func (t *TUN) NewTCPListener(paddr string, lport int) (*TUNTCPListener, error) {
 		tun:      t.tun,
 		tunIP:    t.tunIP,
 
-		srcToProxy: make(map[[4]byte]*[4]byte),
+		srcToProxy:   make(map[[4]byte]*[4]byte),
 		proxyIP:      proxyIP,
 		proxyIPNet:   proxyIPNet,
 		proxyToState: make(map[[4]byte]map[uint16]*TCPConnState),
@@ -241,7 +241,7 @@ func advanceIP(ip net.IP, ipnet *net.IPNet) {
 func (l *TUNTCPListener) Accept() (Handshaker, error) {
 	conn, err := l.listener.Accept()
 	if err != nil {
-    conn.Close()
+		conn.Close()
 		return nil, fmt.Errorf("could not accept TCP connection: %w", err)
 	}
 
@@ -362,10 +362,10 @@ func (l *TUNTCPListener) mapOneTCPPacket(buf *PacketBuf) error {
 			}
 		}
 
-    if pproxyip == nil {
-      glog.Infof("could not find proxy IP for source %s", srcIP)
-      return nil
-    }
+		if pproxyip == nil {
+			glog.Infof("could not find proxy IP for source %s", srcIP)
+			return nil
+		}
 
 		l.handleTermination(&tcp, *pproxyip, srcPort)
 
@@ -431,7 +431,7 @@ func (h *TUNTCPHandshaker) Handshake() (conn net.Conn, raddr net.Addr, err error
 
 	addr := h.listener.tcpDaddr(saddr)
 	if addr == nil {
-    h.Conn.Close()
+		h.Conn.Close()
 		return nil, nil, fmt.Errorf("no original address found for port %d", saddr.Port)
 	}
 	return h.Conn, addr, nil
@@ -453,7 +453,7 @@ type TUNIPListener struct {
 }
 
 func (l *TUNIPListener) Addr() net.Addr {
-  return &TUNAddr{}
+	return &TUNAddr{}
 }
 
 func (l *TUNIPListener) Accept() (Handshaker, error) {
@@ -464,9 +464,16 @@ func (l *TUNIPListener) Accept() (Handshaker, error) {
 		return nil, io.EOF
 	}
 
+  once := new(sync.Once)
+
 	return &TUNIPHandshaker{
 		Conn: &TUNIPConn{
-			mutex: l.mutex,
+      closeFunc: func() error {
+        once.Do(func() {
+          l.mutex.Unlock()
+        })
+        return nil
+      },
 			r: &PacketReader{
 				pktCh:    l.pktCh,
 				firstPkt: buf,
@@ -522,32 +529,124 @@ func (r *PacketReader) Read(p []byte, offset int) (int, error) {
 }
 
 func (t *TUN) NewIPDialer() *TUNIPDialer {
-  glog.Infof("created TUN IP dialer on %s", t.name)
-	return &TUNIPDialer{
-		mutex: &sync.Mutex{},
+	glog.Infof("created TUN IP dialer on %s", t.name)
+  d := &TUNIPDialer{
 		tun:   t.tun,
+    ipToCh: new(sync.Map),
 	}
+
+  go func() {
+    for {
+      buf := allocateBuffer()
+      if _, err := buf.ReadFrom(d.tun); err != nil {
+        glog.Fatalln("could not read from TUN device:", err)
+        return
+      }
+
+      ip := tcpip.IPPacket(buf.PacketBytes())
+      ip4 := ip.IPv4Packet()
+      if ip4 == nil {
+        releaseBuffer(buf)
+        glog.Warningf("received IPv6 packet from TUN device")
+        return
+      }
+
+      dstip := getIP4Array(ip4.DstIP())
+
+      ch, ok := d.ipToCh.Load(dstip)
+      if !ok {
+        releaseBuffer(buf)
+        glog.Warningf("Unknown destination of packet: %s", net.IP(dstip[:]))
+        return
+      }
+
+      ch.(chan*PacketBuf) <- buf
+    }
+  }()
+
+  return d
 }
 
 type TUNIPDialer struct {
 	tun   tun.Device
-	mutex *sync.Mutex
+
+  ipToCh *sync.Map // map[[4]byte]chan*PacketBuf
 }
 
 func (d *TUNIPDialer) Dial(raddr net.Addr) (net.Conn, error) {
-	d.mutex.Lock()
 
-  // TODO support multiple clients
+  conn := &TUNIPDialerConn{
+    tun: d.tun,
+    initialized: make(chan struct{}), 
+    ipToCh: d.ipToCh,
+  }
+
 	return &TUNIPConn{
-		mutex: d.mutex,
-		r:     d.tun,
-		w:     d.tun,
+    closeFunc: func() error { return conn.Close() },
+		r:     conn,
+		w:     conn, // TODO
 	}, nil
 }
 
+type TUNIPDialerConn struct {
+  tun tun.Device
+  writeOnce sync.Once
+
+  ipToCh *sync.Map // map[[4]byte]chan*PacketBuf
+
+  initialized chan struct{}
+
+  // below are readable after initialized
+  firstSrcIP [4]byte
+  readCh <-chan*PacketBuf
+}
+
+func (c *TUNIPDialerConn) Close() error {
+  <-c.initialized
+
+  c.ipToCh.Delete(c.firstSrcIP)
+
+  return nil
+}
+
+func (c *TUNIPDialerConn) Read(p []byte, offset int) (int, error) {
+  <-c.initialized
+  buf := <-c.readCh
+  defer releaseBuffer(buf)
+  n := copy(p[offset:], buf.PacketBytes())
+  return n, nil
+}
+
+func (c *TUNIPDialerConn) Write(b []byte, offset int) (int, error) {
+  var err error
+  c.writeOnce.Do(func () {
+    defer close(c.initialized)
+
+    ip := tcpip.IPPacket(b[offset:])
+    ip4 := ip.IPv4Packet()
+    if ip4 == nil {
+      err = fmt.Errorf("IPv6 packet is not supported")
+      return
+    }
+
+    c.firstSrcIP = getIP4Array(ip4.SrcIP())
+
+    readCh := make(chan*PacketBuf)
+    c.readCh = readCh
+
+    c.ipToCh.Store(c.firstSrcIP, readCh)
+  })
+  if err != nil {
+    return 0, err
+  }
+
+  return c.tun.Write(b, offset)
+}
+  
+
 type TUNIPConn struct {
-  once sync.Once
-	mutex *sync.Mutex
+	once  sync.Once
+  closeFunc func() error
 
 	r    OffsetReader
 	w    OffsetWriter
@@ -588,10 +687,7 @@ func (c *TUNIPConn) Write(b []byte) (int, error) {
 }
 
 func (c *TUNIPConn) Close() error {
-  c.once.Do(func() {
-    c.mutex.Unlock()
-  })
-	return nil
+  return c.closeFunc()
 }
 
 func (c *TUNIPConn) LocalAddr() net.Addr {

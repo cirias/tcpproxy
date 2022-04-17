@@ -82,7 +82,7 @@ func ListenTLSTunnel(secret, laddr, faddr string, config *tls.Config) (*TunnelLi
 		fallbackAddr: fallbackAddr,
 	}
 
-  glog.Infof("created Tunnel listener on %s", listener.Addr())
+	glog.Infof("created Tunnel listener on %s", listener.Addr())
 
 	return tl, nil
 }
@@ -92,11 +92,16 @@ type TLSListener struct {
 	config *tls.Config
 }
 
-func (l *TLSListener) Accept() (net.Conn, error) {
+func (l *TLSListener) Accept() (c net.Conn, err error) {
 	conn, err := l.TCPListener.AcceptTCP()
 	if err != nil {
 		return nil, err
 	}
+	defer func() {
+		if err != nil {
+			_ = conn.Close()
+		}
+	}()
 
 	if err := conn.SetKeepAlive(true); err != nil {
 		return nil, fmt.Errorf("could not set keepalive: %w", err)
@@ -105,6 +110,8 @@ func (l *TLSListener) Accept() (net.Conn, error) {
 	if err := conn.SetKeepAlivePeriod(60 * time.Second); err != nil {
 		return nil, fmt.Errorf("could not set keepalive period: %w", err)
 	}
+
+  glog.V(1).Infof("enabled keekalive on connection from %s", conn.RemoteAddr())
 
 	return tls.Server(conn, l.config), nil
 }
@@ -161,7 +168,7 @@ func NewTLSTunnelDialerWithCert(secret, laddr, raddr, serverName string, caCertB
 		dialer.NetDialer.LocalAddr = addr
 	}
 
-  glog.Infof("created Tunnel dialer to %s", raddr)
+	glog.Infof("created Tunnel dialer to %s", raddr)
 
 	return &TunnelDialer{
 		netDialer:  dialer,

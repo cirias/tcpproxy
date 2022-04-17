@@ -79,7 +79,7 @@ func (pkt *TunnelInitialPacket) Decode(r io.Reader) (err error) {
 			}
 			pkt.DstAddr = addr
 		case "tun_if":
-      pkt.DstAddr = &TUNAddr{}
+			pkt.DstAddr = &TUNAddr{}
 		default:
 			return fmt.Errorf("unknown network: %s", network)
 		}

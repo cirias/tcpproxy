@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"net"
+	// "time"
 
 	"golang.org/x/sync/errgroup"
 
@@ -17,7 +18,7 @@ type NetDialer interface {
 
 type Listener interface {
 	Accept() (Handshaker, error)
-  Addr() net.Addr
+	Addr() net.Addr
 	Close() error
 }
 
@@ -44,7 +45,7 @@ func (rt *RoundTripper) RoundTrip() error {
 			for {
 				h, err := l.Accept()
 				if err != nil {
-          glog.Errorln("could not accept connection from listener %s:", l.Addr(), err)
+					glog.Errorln("could not accept connection from listener %s:", l.Addr(), err)
 					continue
 				}
 
@@ -70,7 +71,7 @@ func (rt *RoundTripper) handle(handshaker Handshaker) error {
 		return fmt.Errorf("could not dial: %w", err)
 	}
 	glog.Infof("connected through proxy [%s <-> %s]", handshaker.RemoteAddr(), raddr)
-  defer glog.Infof("connection closed [%s <-> %s]", handshaker.RemoteAddr(), raddr)
+	defer glog.Infof("connection closed [%s <-> %s]", handshaker.RemoteAddr(), raddr)
 
 	g := new(errgroup.Group)
 	g.Go(func() error {
@@ -90,10 +91,12 @@ func (rt *RoundTripper) handle(handshaker Handshaker) error {
 func copyConn(prefix string, i, o net.Conn) error {
 	b := make([]byte, 8*1024)
 	for {
+		glog.V(1).Infof("%s reading from %s", prefix, i.RemoteAddr())
 		n, err := i.Read(b)
 		if err != nil {
 			return fmt.Errorf("%s could not read from %s: %w", prefix, i.RemoteAddr(), err)
 		}
+		glog.V(1).Infof("%s read bytes from %s: %d", prefix, i.RemoteAddr(), n)
 
 		/*
 		 * // FIXME
@@ -102,8 +105,11 @@ func copyConn(prefix string, i, o net.Conn) error {
 		 * }
 		 */
 
-		if _, err := o.Write(b[:n]); err != nil {
+		glog.V(1).Infof("%s writing to %s", prefix, o.RemoteAddr())
+		m, err := o.Write(b[:n])
+		if err != nil {
 			return fmt.Errorf("%s could not write to %s: %w", prefix, o.RemoteAddr(), err)
 		}
+		glog.V(1).Infof("%s written bytes to %s: %d", prefix, o.RemoteAddr(), m)
 	}
 }

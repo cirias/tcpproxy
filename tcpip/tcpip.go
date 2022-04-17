@@ -190,19 +190,19 @@ func NewUDPPacket(buf []byte, src, dst net.IP, srcPort, dstPort uint16, payload 
 	buf[25] = byte(udpLength)
 
 	copy(buf, defaultIPv4Header)
-  ip4 := IPv4Packet(buf)
-  ipLen := 20 + udpLength
-  buf[2] = byte(ipLen >> 8)
-  buf[3] = byte(ipLen)
-  ip4.SetSrcIP(src)
-  ip4.SetDstIP(dst)
-  ip4.UpdateChecksum()
+	ip4 := IPv4Packet(buf)
+	ipLen := 20 + udpLength
+	buf[2] = byte(ipLen >> 8)
+	buf[3] = byte(ipLen)
+	ip4.SetSrcIP(src)
+	ip4.SetDstIP(dst)
+	ip4.UpdateChecksum()
 
-  // UDP checksum is optional for IPv4
+	// UDP checksum is optional for IPv4
 	buf[26] = 0
 	buf[27] = 0
 	copy(buf[28:], payload)
-	return 28+len(payload)
+	return 28 + len(payload)
 }
 
 // Calculate the TCP/IP checksum defined in rfc1071.  The passed-in csum is any

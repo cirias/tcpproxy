@@ -32,32 +32,32 @@ type Dialer interface {
 
 type RoundTripper struct {
 	Listeners []Listener
-	Dialer   Dialer
+	Dialer    Dialer
 }
 
 func (rt *RoundTripper) RoundTrip() error {
-  g := new(errgroup.Group)
-  for _, listener := range rt.Listeners {
-    l := listener
-    g.Go(func () error {
-      defer l.Close()
-      for {
-        h, err := l.Accept()
-        if err != nil {
-          glog.Errorln("could not accept:", err)
-          continue
-        }
-        glog.Infof("accepted %s", h.RemoteAddr())
+	g := new(errgroup.Group)
+	for _, listener := range rt.Listeners {
+		l := listener
+		g.Go(func() error {
+			defer l.Close()
+			for {
+				h, err := l.Accept()
+				if err != nil {
+					glog.Errorln("could not accept:", err)
+					continue
+				}
+				glog.Infof("accepted %s", h.RemoteAddr())
 
-        go func() {
-          if err := rt.handle(h); err != nil {
-            glog.Errorln(err)
-          }
-        }()
-      }
-    })
-  }
-  return g.Wait()
+				go func() {
+					if err := rt.handle(h); err != nil {
+						glog.Errorln(err)
+					}
+				}()
+			}
+		})
+	}
+	return g.Wait()
 }
 
 func (rt *RoundTripper) handle(handshaker Handshaker) error {

@@ -27,20 +27,20 @@ func main() {
 	}
 
 	tcpDialer := &transport.TCPDialer{}
-  var dialer transport.Dialer = tcpDialer
-  if *tunip != "" {
-    tun, err := transport.NewTUN(*tname, *tunip)
-    if err != nil {
-      glog.Fatal(err)
-    }
+	var dialer transport.Dialer = tcpDialer
+	if *tunip != "" {
+		tun, err := transport.NewTUN(*tname, *tunip)
+		if err != nil {
+			glog.Fatal(err)
+		}
 
-    ipDiailer := tun.NewIPDialer()
+		ipDiailer := tun.NewIPDialer()
 
-    dialer = &transport.TUNTCPDialer{
-      TCP: tcpDialer,
-      IP: ipDiailer, 
-    }
-  }
+		dialer = &transport.TUNTCPDialer{
+			TCP: tcpDialer,
+			IP:  ipDiailer,
+		}
+	}
 
 	rt := &transport.RoundTripper{Listeners: []transport.Listener{listener}, Dialer: dialer}
 

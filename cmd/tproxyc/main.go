@@ -1,8 +1,8 @@
 package main
 
 import (
-  "fmt"
 	"flag"
+	"fmt"
 
 	"github.com/golang/glog"
 
@@ -23,48 +23,47 @@ var tunproxyport = flag.Int("tunproxyport", 0, "TUN device proxy port that TCP s
 func main() {
 	flag.Parse()
 
-  if *tunip != "" && *laddr != "" {
-    fmt.Println("ignoring laddr because tunip is provided")
-  }
+	if *tunip != "" && *laddr != "" {
+		fmt.Println("ignoring laddr because tunip is provided")
+	}
 
-  listeners := make([]transport.Listener, 0, 2)
-  if tunip != nil {
-    tun, err := transport.NewTUN(*tname, *tunip)
-    if err != nil {
-      glog.Fatal(err)
-    }
+	listeners := make([]transport.Listener, 0, 2)
+	if tunip != nil {
+		tun, err := transport.NewTUN(*tname, *tunip)
+		if err != nil {
+			glog.Fatal(err)
+		}
 
-    if err := tun.EnableDefaultRoute(); err != nil {
-      glog.Fatal(err)
-    }
+		if err := tun.EnableDefaultRoute(); err != nil {
+			glog.Fatal(err)
+		}
 
-    ipListener := tun.NewIPListener()
-    listeners = append(listeners, ipListener)
+		ipListener := tun.NewIPListener()
+		listeners = append(listeners, ipListener)
 
-    var tcpListener *transport.TUNTCPListener 
-    if *tunproxyport != 0 {
-      var err error
-      tcpListener, err = tun.NewTCPListener(*tunproxyip, *tunproxyport)
-      if err != nil {
-        glog.Fatal(err)
-      }
+		var tcpListener *transport.TUNTCPListener
+		if *tunproxyport != 0 {
+			var err error
+			tcpListener, err = tun.NewTCPListener(*tunproxyip, *tunproxyport)
+			if err != nil {
+				glog.Fatal(err)
+			}
 
-      listeners = append(listeners, tcpListener)
-    }
+			listeners = append(listeners, tcpListener)
+		}
 
-    go func() {
-      if err := tun.ReadPackets(tcpListener, ipListener); err != nil {
-        glog.Fatal(err)
-      }
-    }()
-  } else {
-    listener, err := transport.ListenRedirectTCP(*laddr)
-    if err != nil {
-      glog.Fatalln(err)
-    }
-    listeners = append(listeners, listener)
-  }
-
+		go func() {
+			if err := tun.ReadPackets(tcpListener, ipListener); err != nil {
+				glog.Fatal(err)
+			}
+		}()
+	} else {
+		listener, err := transport.ListenRedirectTCP(*laddr)
+		if err != nil {
+			glog.Fatalln(err)
+		}
+		listeners = append(listeners, listener)
+	}
 
 	dialer, err := transport.NewTLSTunnelDialerWithCertFile(*secret, "", *raddr, *sname, *cacert)
 	if err != nil {

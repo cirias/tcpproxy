@@ -22,6 +22,7 @@ func main() {
 	flag.Parse()
 
 	listener, err := transport.ListenTLSTunnelWithCertFile(*secret, *laddr, *faddr, *cert, *key, *cacert)
+	// listener, err := transport.ListenTCPTunnel(*secret, *laddr, *faddr)
 	if err != nil {
 		glog.Fatalln(err)
 	}

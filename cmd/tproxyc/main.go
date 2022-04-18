@@ -66,6 +66,7 @@ func main() {
 	}
 
 	dialer, err := transport.NewTLSTunnelDialerWithCertFile(*secret, "", *raddr, *sname, *cacert)
+	// dialer, err := transport.NewTCPDialer(*secret, "", *raddr)
 	if err != nil {
 		glog.Fatalln(err)
 	}

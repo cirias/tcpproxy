@@ -65,7 +65,7 @@ func ListenTLSTunnelWithCert(secret, laddr, faddr string, certBlock, keyBlock, c
 func ListenTLSTunnel(secret, laddr, faddr string, config *tls.Config) (*TunnelListener, error) {
 	listener, err := net.Listen("tcp", laddr)
 	if err != nil {
-		return nil, fmt.Errorf("could not listen TLS: %w", err)
+		return nil, fmt.Errorf("could not listen TCP %s: %w", laddr, err)
 	}
 
 	var fallbackAddr net.Addr
@@ -82,7 +82,7 @@ func ListenTLSTunnel(secret, laddr, faddr string, config *tls.Config) (*TunnelLi
 		fallbackAddr: fallbackAddr,
 	}
 
-	glog.Infof("created Tunnel listener on %s", listener.Addr())
+	glog.Infof("created TLS Tunnel listener on %s", listener.Addr())
 
 	return tl, nil
 }
@@ -111,7 +111,7 @@ func (l *TLSListener) Accept() (c net.Conn, err error) {
 		return nil, fmt.Errorf("could not set keepalive period: %w", err)
 	}
 
-  glog.V(1).Infof("enabled keekalive on connection from %s", conn.RemoteAddr())
+	glog.V(1).Infof("enabled keekalive on connection from %s", conn.RemoteAddr())
 
 	return tls.Server(conn, l.config), nil
 }
@@ -144,20 +144,17 @@ func NewTLSTunnelDialerWithCert(secret, laddr, raddr, serverName string, caCertB
 		config.RootCAs = rootCAs
 	}
 
-	dialer := &tls.Dialer{
-		NetDialer: &net.Dialer{
-			Control: func(_, _ string, c syscall.RawConn) error {
-				var sockErr error
-				err := c.Control(func(fd uintptr) {
-					sockErr = syscall.SetsockoptInt(int(fd), syscall.SOL_SOCKET, syscall.SO_MARK, tcpproxyBypassMark)
-				})
-				if sockErr != nil {
-					return sockErr
-				}
-				return err
-			},
+	netDialer := &net.Dialer{
+		Control: func(_, _ string, c syscall.RawConn) error {
+			var sockErr error
+			err := c.Control(func(fd uintptr) {
+				sockErr = syscall.SetsockoptInt(int(fd), syscall.SOL_SOCKET, syscall.SO_MARK, tcpproxyBypassMark)
+			})
+			if sockErr != nil {
+				return sockErr
+			}
+			return err
 		},
-		Config: config,
 	}
 
 	if laddr != "" {
@@ -165,7 +162,12 @@ func NewTLSTunnelDialerWithCert(secret, laddr, raddr, serverName string, caCertB
 		if err != nil {
 			return nil, fmt.Errorf("could not resolve local address %s: %w", laddr, err)
 		}
-		dialer.NetDialer.LocalAddr = addr
+		netDialer.LocalAddr = addr
+	}
+
+	dialer := &tls.Dialer{
+		NetDialer: netDialer,
+		Config:    config,
 	}
 
 	glog.Infof("created Tunnel dialer to %s", raddr)

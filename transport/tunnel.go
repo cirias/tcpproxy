@@ -48,7 +48,7 @@ func (pkt *TunnelInitialPacket) Decode(r io.Reader) (err error) {
 
 	{
 		if ok := s.Scan(); !ok {
-			return fmt.Errorf("scan ended while reading secret hash")
+			return fmt.Errorf("scan ended while reading secret hash: %w", s.Err())
 		}
 		line := s.Text()
 
@@ -60,7 +60,7 @@ func (pkt *TunnelInitialPacket) Decode(r io.Reader) (err error) {
 
 	{
 		if ok := s.Scan(); !ok {
-			return fmt.Errorf("scan ended while reading destination address")
+			return fmt.Errorf("scan ended while reading destination address: %w", s.Err())
 		}
 		line := s.Bytes()
 
@@ -135,11 +135,11 @@ type TunnelServerHandshaker struct {
 }
 
 func (c *TunnelServerHandshaker) Handshake() (conn net.Conn, raddr net.Addr, err error) {
-	tlsConn := c.Conn.(*tls.Conn)
-	if tlsConn != nil {
+	switch conn := c.Conn.(type) {
+	case *tls.Conn:
 		ctx, cancel := context.WithTimeout(context.Background(), DefaultHandshakeTimeout)
 		defer cancel()
-		if err := tlsConn.HandshakeContext(ctx); err != nil {
+		if err := conn.HandshakeContext(ctx); err != nil {
 			return nil, nil, fmt.Errorf("could not handshake TLS: %w", err)
 		}
 	}
@@ -149,6 +149,10 @@ func (c *TunnelServerHandshaker) Handshake() (conn net.Conn, raddr net.Addr, err
 			_ = c.Conn.Close()
 		}
 	}()
+
+	if err := c.Conn.SetReadDeadline(time.Now().Add(5 * time.Second)); err != nil {
+		return nil, nil, fmt.Errorf("could not set read dead line for the initial packet: %w", err)
+	}
 
 	pkt := new(TunnelInitialPacket)
 	if err := pkt.Decode(c.Conn); err != nil {
@@ -212,7 +216,7 @@ func (d *TunnelDialer) Dial(raddr net.Addr) (net.Conn, error) {
 		Payload: nil,
 	}
 
-	return &TunnelClientConn{conn, pkt, sync.Once{}}, nil
+	return &TunnelClientConn{Conn: conn, pkt: pkt}, nil
 }
 
 type TunnelClientConn struct {

@@ -10,7 +10,9 @@ RUN apt-get update && \
     tcpdump \
     iperf3 \
     procps \
-    make
+    make \
+    gdb \
+    tmux
 
 COPY entrypoint.sh /
 ENTRYPOINT ["/entrypoint.sh"]

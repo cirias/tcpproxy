@@ -16,47 +16,51 @@ const tcpproxyBypassMark int = 0x00100
 
 var NextProtos = []string{"h2", "http/1.1"}
 
-func ListenTLSTunnelWithCertFile(secret, laddr, faddr, certFile, keyFile, caCertFile string) (*TunnelListener, error) {
-	certPEMBlock, err := os.ReadFile(certFile)
+type CertReloader struct {
+	certFile          string
+	keyFile           string
+	cachedCert        *tls.Certificate
+	cachedCertModTime time.Time
+}
+
+func (cr *CertReloader) GetCertificate(h *tls.ClientHelloInfo) (*tls.Certificate, error) {
+	stat, err := os.Stat(cr.keyFile)
 	if err != nil {
-		return nil, fmt.Errorf("could not read cert file %s: %w", certFile, err)
+		return nil, fmt.Errorf("failed checking key file modification time: %w", err)
 	}
 
-	keyPEMBlock, err := os.ReadFile(keyFile)
-	if err != nil {
-		return nil, fmt.Errorf("could not read cert key file %s: %w", keyFile, err)
+	if cr.cachedCert == nil || stat.ModTime().After(cr.cachedCertModTime) {
+		pair, err := tls.LoadX509KeyPair(cr.certFile, cr.keyFile)
+		if err != nil {
+			return nil, fmt.Errorf("failed loading tls key pair: %w", err)
+		}
+
+		cr.cachedCert = &pair
+		cr.cachedCertModTime = stat.ModTime()
 	}
 
-	var caCertPEMBlock []byte
+	return cr.cachedCert, nil
+}
+
+func ListenTLSTunnelWithCert(secret, laddr, faddr string, certFile, keyFile, caCertFile string) (*TunnelListener, error) {
+	certReloader := &CertReloader{certFile: certFile, keyFile: keyFile}
+
+	var clientCAs *x509.CertPool
 	if caCertFile != "" {
-		var err error
-		caCertPEMBlock, err = os.ReadFile(caCertFile)
+		caCertPEMBlock, err := os.ReadFile(caCertFile)
 		if err != nil {
 			return nil, fmt.Errorf("could not read CA cert file %s: %w", caCertFile, err)
 		}
-	}
-
-	return ListenTLSTunnelWithCert(secret, laddr, faddr, certPEMBlock, keyPEMBlock, caCertPEMBlock)
-}
-
-func ListenTLSTunnelWithCert(secret, laddr, faddr string, certBlock, keyBlock, caCertBlock []byte) (*TunnelListener, error) {
-	config := &tls.Config{
-		NextProtos: NextProtos,
-	}
-
-	cert, err := tls.X509KeyPair(certBlock, keyBlock)
-	if err != nil {
-		return nil, fmt.Errorf("could not load cert: %w", err)
-	}
-
-	config.Certificates = []tls.Certificate{cert}
-
-	if caCertBlock != nil {
-		clientCAs := x509.NewCertPool()
-		if ok := clientCAs.AppendCertsFromPEM(caCertBlock); !ok {
+		clientCAs = x509.NewCertPool()
+		if ok := clientCAs.AppendCertsFromPEM(caCertPEMBlock); !ok {
 			return nil, fmt.Errorf("could not append certs to client CAs")
 		}
-		config.ClientCAs = clientCAs
+	}
+
+	config := &tls.Config{
+		NextProtos:     NextProtos,
+		GetCertificate: certReloader.GetCertificate,
+		ClientCAs:      clientCAs,
 	}
 
 	return ListenTLSTunnel(secret, laddr, faddr, config)

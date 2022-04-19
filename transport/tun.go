@@ -73,11 +73,26 @@ func NewTUN(name, tunAddr string) (*TUN, error) {
 }
 
 func (t *TUN) EnableDefaultRoute() error {
+	// ugly way to clean the previous created rules
+	for {
+		if err := exec.Command("ip", "rule", "del", "not", "fwmark", fmt.Sprint(tcpproxyBypassMark), "table", tunRouteTable).Run(); err != nil {
+			break
+		}
+	}
 	if err := exec.Command("ip", "rule", "add", "not", "fwmark", fmt.Sprint(tcpproxyBypassMark), "table", tunRouteTable).Run(); err != nil {
 		return fmt.Errorf("could not set bypass rule: %w", err)
 	}
 
-	if err := exec.Command("ip", "route", "add", "default", "via", t.tunIP.String(), "dev", t.name, "src", t.tunIP.String(), "table", tunRouteTable).Run(); err != nil {
+	for {
+		if err := exec.Command("ip", "rule", "del", "lookup", "main", "suppress_prefixlength", "0").Run(); err != nil {
+			break
+		}
+	}
+	if err := exec.Command("ip", "rule", "add", "lookup", "main", "suppress_prefixlength", "0").Run(); err != nil {
+		return fmt.Errorf("could not set bypass rule: %w", err)
+	}
+
+	if err := exec.Command("ip", "route", "add", "table", tunRouteTable, "default", "dev", t.name, "scope", "link").Run(); err != nil {
 		return fmt.Errorf("could not set route table for tun device: %w", err)
 	}
 

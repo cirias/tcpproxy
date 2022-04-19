@@ -21,7 +21,7 @@ var tunip = flag.String("tunip", "", "TUN device IP address in CIDR")
 func main() {
 	flag.Parse()
 
-	listener, err := transport.ListenTLSTunnelWithCertFile(*secret, *laddr, *faddr, *cert, *key, *cacert)
+	listener, err := transport.ListenTLSTunnelWithCert(*secret, *laddr, *faddr, *cert, *key, *cacert)
 	// listener, err := transport.ListenTCPTunnel(*secret, *laddr, *faddr)
 	if err != nil {
 		glog.Fatalln(err)

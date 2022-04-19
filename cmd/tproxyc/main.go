@@ -34,10 +34,6 @@ func main() {
 			glog.Fatal(err)
 		}
 
-		if err := tun.EnableDefaultRoute(); err != nil {
-			glog.Fatal(err)
-		}
-
 		ipListener := tun.NewIPListener()
 		listeners = append(listeners, ipListener)
 

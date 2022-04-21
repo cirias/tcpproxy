@@ -712,7 +712,7 @@ func (c *TUNIPConn) Read(p []byte) (int, error) {
 	p[2] = 0
 	p[3] = 0
 	binary.BigEndian.PutUint16(p[:2], uint16(n))
-	return n + 4, err
+	return 4 + n, err
 }
 
 func (c *TUNIPConn) Write(b []byte) (int, error) {
@@ -724,20 +724,13 @@ func (c *TUNIPConn) Write(b []byte) (int, error) {
 
 		n := int(binary.BigEndian.Uint16(c.wbuf.Bytes()[:2]))
 		if c.wbuf.Len() < 4+n {
-			break
+			return len(b), nil
 		}
 
 		if _, err := c.w.Write(c.wbuf.Next(4+n), 4); err != nil {
 			return len(b), err
 		}
 	}
-
-	// TODO optimize
-	remain := c.wbuf.Bytes()
-	c.wbuf.Reset()
-	c.wbuf.Write(remain)
-
-	return len(b), nil
 }
 
 func (c *TUNIPConn) Close() error {

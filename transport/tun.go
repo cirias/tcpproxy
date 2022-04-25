@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"net"
+	"net/netip"
 	"os/exec"
 	"sync"
 	"time"
@@ -18,7 +19,7 @@ import (
 )
 
 type TCPConnState struct {
-	srcip [4]byte
+	srcip netip.Addr
 	state byte
 	seq   int
 }
@@ -138,31 +139,35 @@ func (t *TUN) ReadPackets(tcpl *TUNTCPListener, ipl *TUNIPListener) error {
 }
 
 func (t *TUN) NewTCPListener(paddr string, lport int) (*TUNTCPListener, error) {
-	var proxyIP [4]byte
-	var proxyIPNet *net.IPNet
+	var proxyIP = new(netip.Addr)
+	var proxyIPPrefix = new(netip.Prefix)
 	if paddr == "" {
+		ip, _ := netip.AddrFromSlice(t.tunIP.To4())
+
 		ones, bits := t.tunIPNet.Mask.Size()
-		if ones > 24 {
-			return nil, fmt.Errorf("IP mask of TUN cannot be larger than 24 when proxy address not specified")
+		if (bits - ones) < 8 {
+			return nil, fmt.Errorf("Network size of TUN cannot be smaller than 2^8 when proxy address is not specified")
 		}
-		copy(proxyIP[:], t.tunIP.To4())
-		proxyIP[3] ^= 1 << 7
-		m := net.CIDRMask(ones+1, bits)
-		proxyIPNet = &net.IPNet{
-			IP:   net.IP(proxyIP[:]).Mask(m),
-			Mask: m,
-		}
+
+		// flip the highest bit of the last byte,
+		// aka the 25th bit for IPv4 or the 121th bit for IPv6
+		ipBytes := ip.AsSlice()
+		ipBytes[len(ipBytes)-1] ^= 1 << 7
+		ip, _ = netip.AddrFromSlice(ipBytes)
+
+		*proxyIP = ip
+		*proxyIPPrefix = netip.PrefixFrom(ip, ip.BitLen()-7)
 	} else {
-		var err error
-		var ip net.IP
-		ip, proxyIPNet, err = net.ParseCIDR(paddr)
+		prefix, err := netip.ParsePrefix(paddr)
 		if err != nil {
 			return nil, fmt.Errorf("could not parse paddr: %w", err)
 		}
-		if !t.tunIPNet.Contains(ip) {
+		if !t.tunIPNet.Contains(prefix.Addr().AsSlice()) {
 			return nil, fmt.Errorf("paddr is not within range of tunAddr")
 		}
-		copy(proxyIP[:], ip.To4())
+
+		*proxyIP = prefix.Addr()
+		*proxyIPPrefix = prefix
 	}
 
 	laddr := &net.TCPAddr{
@@ -173,19 +178,19 @@ func (t *TUN) NewTCPListener(paddr string, lport int) (*TUNTCPListener, error) {
 	if err != nil {
 		return nil, fmt.Errorf("could not create TCP listener: %w", err)
 	}
-	glog.Infof("created TUN TCP listener, proxyIP=%s proxyIPNet=%s laddr=%s", net.IP(proxyIP[:]), proxyIPNet, listener.Addr())
+	glog.Infof("created TUN TCP listener, proxyIP=%s proxyIPNet=%s laddr=%s", proxyIP, proxyIPPrefix, listener.Addr())
 
 	l := &TUNTCPListener{
 		listener: listener,
 		tun:      t.tun,
 		tunIP:    t.tunIP,
 
-		srcToProxy:   make(map[[4]byte]*[4]byte),
-		proxyIP:      proxyIP,
-		proxyIPNet:   proxyIPNet,
-		proxyToState: make(map[[4]byte]map[uint16]*TCPConnState),
+		srcToProxy:    make(map[netip.Addr]*netip.Addr),
+		proxyIP:       *proxyIP,
+		proxyIPPrefix: *proxyIPPrefix,
+		proxyToState:  make(map[netip.Addr]map[uint16]*TCPConnState),
 
-		proxyToDst: make(map[[4]byte]map[uint16]*net.TCPAddr),
+		proxyToDst: make(map[netip.Addr]map[uint16]*net.TCPAddr),
 
 		pktCh: make(chan *PacketBuf, 0),
 	}
@@ -204,24 +209,25 @@ type TUNTCPListener struct {
 
 	listener net.Listener
 
-	srcToProxy   map[[4]byte]*[4]byte
-	proxyIP      [4]byte
-	proxyIPNet   *net.IPNet
-	proxyToState map[[4]byte]map[uint16]*TCPConnState
+	srcToProxy    map[netip.Addr]*netip.Addr
+	proxyIP       netip.Addr
+	proxyIPPrefix netip.Prefix
+	proxyToState  map[netip.Addr]map[uint16]*TCPConnState
 
 	// src ip -> (src port -> dst address)
-	proxyToDst      map[[4]byte]map[uint16]*net.TCPAddr
+	proxyToDst      map[netip.Addr]map[uint16]*net.TCPAddr
 	proxyToDstMutex sync.RWMutex
 
 	pktCh chan *PacketBuf
 }
 
-func (l *TUNTCPListener) allocatProxyIP() *[4]byte {
-	ones, bits := l.proxyIPNet.Mask.Size()
+func (l *TUNTCPListener) allocateProxyIP() *netip.Addr {
+	bits := l.proxyIPPrefix.Addr().BitLen()
+	ones := l.proxyIPPrefix.Bits()
 	size := 1 << (bits - ones)
 	for i := 0; i < size; i++ {
-		advanceIP(l.proxyIP[:], l.proxyIPNet)
-		if l.proxyToState[l.proxyIP] == nil {
+		l.proxyIP = l.proxyIP.Next()
+		if l.proxyIPPrefix.Contains(l.proxyIP) && l.proxyToState[l.proxyIP] == nil {
 			ip := l.proxyIP
 			return &ip
 		}
@@ -275,7 +281,7 @@ func (l *TUNTCPListener) tcpDaddr(proxyAddr *net.TCPAddr) *net.TCPAddr {
 	l.proxyToDstMutex.RLock()
 	defer l.proxyToDstMutex.RUnlock()
 
-	portToDst := l.proxyToDst[getIP4Array(proxyAddr.IP)]
+	portToDst := l.proxyToDst[proxyAddr.AddrPort().Addr()]
 	if portToDst == nil {
 		return nil
 	}
@@ -324,7 +330,7 @@ func (l *TUNTCPListener) mapOneTCPPacket(buf *PacketBuf) error {
 		// translate packets came from TCP server
 		// NOTE: l.tunIP and laddr.IP are the same
 
-		dstip := getIP4Array(dstIP)
+		dstip, _ := netip.AddrFromSlice(dstIP)
 
 		var oaddr *net.TCPAddr
 		{
@@ -347,19 +353,20 @@ func (l *TUNTCPListener) mapOneTCPPacket(buf *PacketBuf) error {
 	} else if srcIP.Equal(l.tunIP) {
 		// translate packets came from kernel TCP stack
 
-		srcip := getIP4Array(srcIP)
+		srcip, _ := netip.AddrFromSlice(srcIP)
 		pproxyip := l.srcToProxy[srcip]
 
 		if tcp.SYN() && !tcp.ACK() {
 			glog.Infof("initialize connection %s:%d to %s:%d", l.tunIP, srcPort, dstIP, dstPort)
 
 			if pproxyip == nil {
-				pproxyip = l.allocatProxyIP()
+				pproxyip = l.allocateProxyIP()
 				if pproxyip == nil {
 					return fmt.Errorf("cannot allocate new proxy IP")
 				}
 				l.srcToProxy[srcip] = pproxyip
 				l.proxyToState[*pproxyip] = make(map[uint16]*TCPConnState)
+				glog.Infof("new proxy IP %s allocated for src %s", pproxyip, srcip)
 			}
 			l.proxyToState[*pproxyip][srcPort] = &TCPConnState{srcip, TCPSynSent, 0}
 
@@ -384,7 +391,7 @@ func (l *TUNTCPListener) mapOneTCPPacket(buf *PacketBuf) error {
 
 		l.handleTermination(&tcp, *pproxyip, srcPort)
 
-		ip4.SetSrcIP(pproxyip[:])
+		ip4.SetSrcIP(pproxyip.AsSlice())
 		ip4.SetDstIP(laddr.IP)
 		tcp.SetDstPort(uint16(laddr.Port))
 	}
@@ -396,7 +403,7 @@ func (l *TUNTCPListener) mapOneTCPPacket(buf *PacketBuf) error {
 	return err
 }
 
-func (l *TUNTCPListener) handleTermination(tcp *tcpip.TCPPacket, proxyip [4]byte, port uint16) {
+func (l *TUNTCPListener) handleTermination(tcp *tcpip.TCPPacket, proxyip netip.Addr, port uint16) {
 	portToState := l.proxyToState[proxyip]
 	if portToState == nil {
 		return
@@ -424,7 +431,7 @@ func (l *TUNTCPListener) handleTermination(tcp *tcpip.TCPPacket, proxyip [4]byte
 			delete(l.srcToProxy, s.srcip)
 		}
 	} else if tcp.FIN() {
-		glog.V(1).Infof("FIN of %s:%d", net.IP(proxyip[:]), port)
+		glog.V(1).Infof("FIN of %s:%d", proxyip, port)
 
 		switch s.state {
 		case TCPSynSent:
@@ -560,7 +567,7 @@ func (t *TUN) NewIPDialer() *TUNIPDialer {
 	glog.Infof("created TUN IP dialer on %s", t.name)
 	d := &TUNIPDialer{
 		tun:    t.tun,
-		ipToCh: make(map[[4]byte]chan *PacketBuf),
+		ipToCh: make(map[netip.Addr]chan *PacketBuf),
 	}
 
 	go func() {
@@ -579,14 +586,14 @@ func (t *TUN) NewIPDialer() *TUNIPDialer {
 				continue
 			}
 
-			dstip := getIP4Array(ip4.DstIP())
+			dstip, _ := netip.AddrFromSlice(ip4.DstIP())
 
 			d.ipToChMutex.RLock()
 			ch, ok := d.ipToCh[dstip]
 			d.ipToChMutex.RUnlock()
 			if !ok {
 				releaseBuffer(buf)
-				glog.Warningf("Unknown destination of packet: %s", net.IP(dstip[:]))
+				glog.Warningf("Unknown destination of packet: %s", dstip)
 				continue
 			}
 
@@ -601,7 +608,7 @@ type TUNIPDialer struct {
 	tun tun.Device
 
 	ipToChMutex sync.RWMutex
-	ipToCh      map[[4]byte]chan *PacketBuf
+	ipToCh      map[netip.Addr]chan *PacketBuf
 }
 
 func (d *TUNIPDialer) Dial(raddr net.Addr) (net.Conn, error) {
@@ -626,12 +633,12 @@ type TUNIPDialerConn struct {
 	closeOnce sync.Once
 
 	ipToChMutex *sync.RWMutex
-	ipToCh      map[[4]byte]chan *PacketBuf
+	ipToCh      map[netip.Addr]chan *PacketBuf
 
 	initialized chan struct{}
 
 	// below are readable after initialized
-	firstSrcIP [4]byte
+	firstSrcIP netip.Addr
 	readCh     <-chan *PacketBuf
 }
 
@@ -642,7 +649,7 @@ func (c *TUNIPDialerConn) Close() error {
 		c.ipToChMutex.Lock()
 		ch, ok := c.ipToCh[c.firstSrcIP]
 		if ok && ch == c.readCh {
-			glog.Infof("closing its own read chan of client %s", net.IP(c.firstSrcIP[:]))
+			glog.Infof("closing its own read chan of client %s", c.firstSrcIP)
 			delete(c.ipToCh, c.firstSrcIP)
 			close(ch)
 		}
@@ -677,7 +684,7 @@ func (c *TUNIPDialerConn) Write(b []byte, offset int) (int, error) {
 			return
 		}
 
-		c.firstSrcIP = getIP4Array(ip4.SrcIP())
+		c.firstSrcIP, _ = netip.AddrFromSlice(ip4.SrcIP())
 
 		readCh := make(chan *PacketBuf)
 		c.readCh = readCh
@@ -685,7 +692,7 @@ func (c *TUNIPDialerConn) Write(b []byte, offset int) (int, error) {
 		c.ipToChMutex.Lock()
 		ch, ok := c.ipToCh[c.firstSrcIP]
 		if ok {
-			glog.Infof("closing the remaining read chan of client %s", net.IP(c.firstSrcIP[:]))
+			glog.Infof("closing the remaining read chan of client %s", c.firstSrcIP)
 			close(ch)
 		}
 		c.ipToCh[c.firstSrcIP] = readCh
@@ -797,14 +804,4 @@ type OffsetReader interface {
 
 type OffsetWriter interface {
 	Write([]byte, int) (int, error)
-}
-
-func getIP4Array(ip net.IP) [4]byte {
-	ip4 := ip.To4()
-	return [4]byte{ip4[0], ip4[1], ip4[2], ip4[3]}
-}
-
-func getIP4PortArray(ip net.IP, port uint16) [6]byte {
-	ip4 := ip.To4()
-	return [6]byte{ip4[0], ip4[1], ip4[2], ip4[3], byte(port >> 8), byte(port)}
 }

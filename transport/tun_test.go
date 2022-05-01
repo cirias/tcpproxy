@@ -4,33 +4,60 @@ import (
 	"encoding/binary"
 	"fmt"
 	"net"
+	"os/exec"
 	"testing"
 	"time"
 
+	"github.com/golang/glog"
 	"golang.org/x/sync/errgroup"
+
+	wgtun "golang.zx2c4.com/wireguard/tun"
 
 	"github.com/cirias/tcpproxy/tcpip"
 )
 
+const (
+	tunAddr       = "192.168.200.1/24"
+	tunRouteTable = "400"
+)
+
 func TestTun(t *testing.T) {
-	tun, err := NewTUN("", "192.168.200.1/24")
+	tun, err := wgtun.CreateTUN("", 1420)
 	if err != nil {
 		t.Fatal(err)
 	}
 
-	if err := tun.EnableDefaultRoute(); err != nil {
-		t.Fatal(err)
-	}
-
-	tcpListener, err := tun.NewTCPListener("", 12345)
+	tunName, err := tun.Name()
 	if err != nil {
 		t.Fatal(err)
 	}
 
-	ipListener := tun.NewIPListener()
+	if err := exec.Command("ip", "address", "add", tunAddr, "dev", tunName).Run(); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := exec.Command("ip", "link", "set", "dev", tunName, "up").Run(); err != nil {
+		t.Fatal(err)
+	}
+
+	ttun, err := NewTUN(tun, tunAddr)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if err := ttun.enableDefaultRoute(); err != nil {
+		t.Fatal(err)
+	}
+
+	tcpListener, err := ttun.NewTCPListener("192.168.200.128/25", 12345)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	ipListener := ttun.NewIPListener()
 
 	go func() {
-		if err := tun.ReadPackets(tcpListener, ipListener); err != nil {
+		if err := ttun.ReadPackets(tcpListener, ipListener); err != nil {
 			fmt.Println(err)
 		}
 	}()
@@ -231,4 +258,33 @@ func TestTun(t *testing.T) {
 
 		time.Sleep(time.Second)
 	}
+}
+
+func (t *TUN) enableDefaultRoute() error {
+	// ugly way to clean the previous created rules
+	for {
+		if err := exec.Command("ip", "rule", "del", "not", "fwmark", fmt.Sprint(tcpproxyBypassMark), "table", tunRouteTable).Run(); err != nil {
+			break
+		}
+	}
+	if err := exec.Command("ip", "rule", "add", "not", "fwmark", fmt.Sprint(tcpproxyBypassMark), "table", tunRouteTable).Run(); err != nil {
+		return fmt.Errorf("could not set bypass rule: %w", err)
+	}
+
+	for {
+		if err := exec.Command("ip", "rule", "del", "lookup", "main", "suppress_prefixlength", "0").Run(); err != nil {
+			break
+		}
+	}
+	if err := exec.Command("ip", "rule", "add", "lookup", "main", "suppress_prefixlength", "0").Run(); err != nil {
+		return fmt.Errorf("could not set bypass rule: %w", err)
+	}
+
+	if err := exec.Command("ip", "route", "add", "table", tunRouteTable, "default", "dev", t.name, "scope", "link").Run(); err != nil {
+		return fmt.Errorf("could not set route table for tun device: %w", err)
+	}
+
+	glog.Infof("enabled default route to %s", t.name)
+
+	return nil
 }

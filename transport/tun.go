@@ -7,13 +7,12 @@ import (
 	"io"
 	"net"
 	"net/netip"
-	"os/exec"
 	"sync"
 	"time"
 
-	"golang.zx2c4.com/wireguard/tun"
-
 	"github.com/golang/glog"
+
+	"golang.zx2c4.com/wireguard/tun"
 
 	"github.com/cirias/tcpproxy/tcpip"
 )
@@ -23,8 +22,6 @@ type TCPConnState struct {
 	state byte
 	seq   int
 }
-
-var tunRouteTable = "400"
 
 const (
 	TCPSynSent byte = 1 + iota
@@ -39,28 +36,15 @@ type TUN struct {
 	tunIPNet *net.IPNet
 }
 
-func NewTUN(name, tunAddr string) (*TUN, error) {
+func NewTUN(tun tun.Device, tunAddr string) (*TUN, error) {
 	tunIP, tunIPNet, err := net.ParseCIDR(tunAddr)
 	if err != nil {
 		return nil, fmt.Errorf("could not parse tunAddr: %w", err)
 	}
 
-	tun, err := tun.CreateTUN(name, 1420)
-	if err != nil {
-		return nil, fmt.Errorf("could not create TUN device: %w", err)
-	}
-
 	tunName, err := tun.Name()
 	if err != nil {
 		return nil, fmt.Errorf("could not get TUN device name: %w", err)
-	}
-
-	if err := exec.Command("ip", "address", "add", tunAddr, "dev", tunName).Run(); err != nil {
-		return nil, fmt.Errorf("could not add IP %s to %s: %w", tunAddr, tunName, err)
-	}
-
-	if err := exec.Command("ip", "link", "set", "dev", tunName, "up").Run(); err != nil {
-		return nil, fmt.Errorf("could not set %s up: %w", tunName, err)
 	}
 
 	glog.Infof("created TUN device %s at %s", tunName, tunIP)
@@ -71,35 +55,6 @@ func NewTUN(name, tunAddr string) (*TUN, error) {
 		tunIP:    tunIP,
 		tunIPNet: tunIPNet,
 	}, nil
-}
-
-func (t *TUN) EnableDefaultRoute() error {
-	// ugly way to clean the previous created rules
-	for {
-		if err := exec.Command("ip", "rule", "del", "not", "fwmark", fmt.Sprint(tcpproxyBypassMark), "table", tunRouteTable).Run(); err != nil {
-			break
-		}
-	}
-	if err := exec.Command("ip", "rule", "add", "not", "fwmark", fmt.Sprint(tcpproxyBypassMark), "table", tunRouteTable).Run(); err != nil {
-		return fmt.Errorf("could not set bypass rule: %w", err)
-	}
-
-	for {
-		if err := exec.Command("ip", "rule", "del", "lookup", "main", "suppress_prefixlength", "0").Run(); err != nil {
-			break
-		}
-	}
-	if err := exec.Command("ip", "rule", "add", "lookup", "main", "suppress_prefixlength", "0").Run(); err != nil {
-		return fmt.Errorf("could not set bypass rule: %w", err)
-	}
-
-	if err := exec.Command("ip", "route", "add", "table", tunRouteTable, "default", "dev", t.name, "scope", "link").Run(); err != nil {
-		return fmt.Errorf("could not set route table for tun device: %w", err)
-	}
-
-	glog.Infof("enabled default route to %s", t.name)
-
-	return nil
 }
 
 func (t *TUN) ReadPackets(tcpl *TUNTCPListener, ipl *TUNIPListener) error {
@@ -141,34 +96,36 @@ func (t *TUN) ReadPackets(tcpl *TUNTCPListener, ipl *TUNIPListener) error {
 func (t *TUN) NewTCPListener(paddr string, lport int) (*TUNTCPListener, error) {
 	var proxyIP = new(netip.Addr)
 	var proxyIPPrefix = new(netip.Prefix)
-	if paddr == "" {
-		ip, _ := netip.AddrFromSlice(t.tunIP.To4())
-
-		ones, bits := t.tunIPNet.Mask.Size()
-		if (bits - ones) < 8 {
-			return nil, fmt.Errorf("Network size of TUN cannot be smaller than 2^8 when proxy address is not specified")
-		}
-
-		// flip the highest bit of the last byte,
-		// aka the 25th bit for IPv4 or the 121th bit for IPv6
-		ipBytes := ip.AsSlice()
-		ipBytes[len(ipBytes)-1] ^= 1 << 7
-		ip, _ = netip.AddrFromSlice(ipBytes)
-
-		*proxyIP = ip
-		*proxyIPPrefix = netip.PrefixFrom(ip, ip.BitLen()-7)
-	} else {
-		prefix, err := netip.ParsePrefix(paddr)
-		if err != nil {
-			return nil, fmt.Errorf("could not parse paddr: %w", err)
-		}
-		if !t.tunIPNet.Contains(prefix.Addr().AsSlice()) {
-			return nil, fmt.Errorf("paddr is not within range of tunAddr")
-		}
-
-		*proxyIP = prefix.Addr()
-		*proxyIPPrefix = prefix
+	/*
+	 *   if paddr == "" {
+	 *     ip, _ := netip.AddrFromSlice(t.tunIP.To4())
+	 *
+	 *     ones, bits := t.tunIPNet.Mask.Size()
+	 *     if (bits - ones) < 8 {
+	 *       return nil, fmt.Errorf("Network size of TUN cannot be smaller than 2^8 when proxy address is not specified")
+	 *     }
+	 *
+	 *     // flip the highest bit of the last byte,
+	 *     // aka the 25th bit for IPv4 or the 121th bit for IPv6
+	 *     ipBytes := ip.AsSlice()
+	 *     ipBytes[len(ipBytes)-1] ^= 1 << 7
+	 *     ip, _ = netip.AddrFromSlice(ipBytes)
+	 *
+	 *     *proxyIP = ip
+	 *     *proxyIPPrefix = netip.PrefixFrom(ip, ip.BitLen()-7)
+	 *   } else {
+	 */
+	prefix, err := netip.ParsePrefix(paddr)
+	if err != nil {
+		return nil, fmt.Errorf("could not parse paddr: %w", err)
 	}
+	if !t.tunIPNet.Contains(prefix.Addr().AsSlice()) {
+		return nil, fmt.Errorf("paddr is not within range of tunAddr")
+	}
+
+	*proxyIP = prefix.Addr()
+	*proxyIPPrefix = prefix
+	// }
 
 	laddr := &net.TCPAddr{
 		IP:   t.tunIP,
@@ -570,37 +527,6 @@ func (t *TUN) NewIPDialer() *TUNIPDialer {
 		ipToCh: make(map[netip.Addr]chan *PacketBuf),
 	}
 
-	go func() {
-		for {
-			buf := allocateBuffer()
-			if _, err := buf.ReadFrom(d.tun); err != nil {
-				glog.Fatalln("could not read from TUN device:", err)
-				return
-			}
-
-			ip := tcpip.IPPacket(buf.PacketBytes())
-			ip4 := ip.IPv4Packet()
-			if ip4 == nil {
-				releaseBuffer(buf)
-				glog.Warningf("received IPv6 packet from TUN device")
-				continue
-			}
-
-			dstip, _ := netip.AddrFromSlice(ip4.DstIP())
-
-			d.ipToChMutex.RLock()
-			ch, ok := d.ipToCh[dstip]
-			d.ipToChMutex.RUnlock()
-			if !ok {
-				releaseBuffer(buf)
-				glog.Warningf("Unknown destination of packet: %s", dstip)
-				continue
-			}
-
-			ch <- buf
-		}
-	}()
-
 	return d
 }
 
@@ -609,6 +535,36 @@ type TUNIPDialer struct {
 
 	ipToChMutex sync.RWMutex
 	ipToCh      map[netip.Addr]chan *PacketBuf
+}
+
+func (d *TUNIPDialer) ReadPackets() error {
+	for {
+		buf := allocateBuffer()
+		if _, err := buf.ReadFrom(d.tun); err != nil {
+			return fmt.Errorf("could not read from TUN device: %w", err)
+		}
+
+		ip := tcpip.IPPacket(buf.PacketBytes())
+		ip4 := ip.IPv4Packet()
+		if ip4 == nil {
+			releaseBuffer(buf)
+			glog.Warningf("received IPv6 packet from TUN device")
+			continue
+		}
+
+		dstip, _ := netip.AddrFromSlice(ip4.DstIP())
+
+		d.ipToChMutex.RLock()
+		ch, ok := d.ipToCh[dstip]
+		d.ipToChMutex.RUnlock()
+		if !ok {
+			releaseBuffer(buf)
+			glog.Warningf("Unknown destination of packet: %s", dstip)
+			continue
+		}
+
+		ch <- buf
+	}
 }
 
 func (d *TUNIPDialer) Dial(raddr net.Addr) (net.Conn, error) {

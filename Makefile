@@ -2,7 +2,7 @@
 
 build:
 	CGO_ENABLED=0 go build ./cmd/tproxyt
-	GOOS=linux GOARCH=arm GOARM=7 go build -o tproxys_armv7 ./cmd/tproxyt
+	GOOS=linux GOARCH=arm GOARM=7 go build -o tproxyt_armv7 ./cmd/tproxyt
 
 transport.test: ./transport/*.go
 	CGO_ENABLED=0 go test ./transport -c

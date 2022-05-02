@@ -18,6 +18,7 @@ import (
 
 const (
 	tunAddr       = "192.168.200.1/24"
+	proxyNet      = "192.168.200.128/25"
 	tunRouteTable = "400"
 )
 
@@ -40,24 +41,19 @@ func TestTun(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	ttun, err := NewTUN(tun, tunAddr)
+	if err := enableDefaultRoute(tunName); err != nil {
+		t.Fatal(err)
+	}
+
+	tcpListener, err := NewTUNTCPListener(tun, tunAddr, proxyNet, 12345)
 	if err != nil {
 		t.Fatal(err)
 	}
 
-	if err := ttun.enableDefaultRoute(); err != nil {
-		t.Fatal(err)
-	}
-
-	tcpListener, err := ttun.NewTCPListener("192.168.200.128/25", 12345)
-	if err != nil {
-		t.Fatal(err)
-	}
-
-	ipListener := ttun.NewIPListener()
+	ipListener := NewTUNIPListener(tun)
 
 	go func() {
-		if err := ttun.ReadPackets(tcpListener, ipListener); err != nil {
+		if err := TUNReadPacketsRoutine(tun, tcpListener, ipListener); err != nil {
 			fmt.Println(err)
 		}
 	}()
@@ -260,7 +256,7 @@ func TestTun(t *testing.T) {
 	}
 }
 
-func (t *TUN) enableDefaultRoute() error {
+func enableDefaultRoute(ifname string) error {
 	// ugly way to clean the previous created rules
 	for {
 		if err := exec.Command("ip", "rule", "del", "not", "fwmark", fmt.Sprint(tcpproxyBypassMark), "table", tunRouteTable).Run(); err != nil {
@@ -280,11 +276,11 @@ func (t *TUN) enableDefaultRoute() error {
 		return fmt.Errorf("could not set bypass rule: %w", err)
 	}
 
-	if err := exec.Command("ip", "route", "add", "table", tunRouteTable, "default", "dev", t.name, "scope", "link").Run(); err != nil {
+	if err := exec.Command("ip", "route", "add", "table", tunRouteTable, "default", "dev", ifname, "scope", "link").Run(); err != nil {
 		return fmt.Errorf("could not set route table for tun device: %w", err)
 	}
 
-	glog.Infof("enabled default route to %s", t.name)
+	glog.Infof("enabled default route to %s", ifname)
 
 	return nil
 }

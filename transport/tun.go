@@ -29,35 +29,7 @@ const (
 	TCPLastAck
 )
 
-type TUN struct {
-	name     string
-	tun      tun.Device
-	tunIP    net.IP
-	tunIPNet *net.IPNet
-}
-
-func NewTUN(tun tun.Device, tunAddr string) (*TUN, error) {
-	tunIP, tunIPNet, err := net.ParseCIDR(tunAddr)
-	if err != nil {
-		return nil, fmt.Errorf("could not parse tunAddr: %w", err)
-	}
-
-	tunName, err := tun.Name()
-	if err != nil {
-		return nil, fmt.Errorf("could not get TUN device name: %w", err)
-	}
-
-	glog.Infof("created TUN device %s at %s", tunName, tunIP)
-
-	return &TUN{
-		name:     tunName,
-		tun:      tun,
-		tunIP:    tunIP,
-		tunIPNet: tunIPNet,
-	}, nil
-}
-
-func (t *TUN) ReadPackets(tcpl *TUNTCPListener, ipl *TUNIPListener) error {
+func TUNReadPacketsRoutine(tun tun.Device, tcpl *TUNTCPListener, ipl *TUNIPListener) error {
 	defer func() {
 		if tcpl != nil {
 			close(tcpl.pktCh)
@@ -69,7 +41,7 @@ func (t *TUN) ReadPackets(tcpl *TUNTCPListener, ipl *TUNIPListener) error {
 
 	for {
 		buf := allocateBuffer()
-		if _, err := buf.ReadFrom(t.tun); err != nil {
+		if _, err := buf.ReadFrom(tun); err != nil {
 			return fmt.Errorf("could not read from TUN device: %w", err)
 		}
 
@@ -93,7 +65,12 @@ func (t *TUN) ReadPackets(tcpl *TUNTCPListener, ipl *TUNIPListener) error {
 	}
 }
 
-func (t *TUN) NewTCPListener(paddr string, lport int) (*TUNTCPListener, error) {
+func NewTUNTCPListener(tun tun.Device, tunAddr, paddr string, lport int) (*TUNTCPListener, error) {
+	tunIP, tunIPNet, err := net.ParseCIDR(tunAddr)
+	if err != nil {
+		return nil, fmt.Errorf("could not parse tunAddr: %w", err)
+	}
+
 	var proxyIP = new(netip.Addr)
 	var proxyIPPrefix = new(netip.Prefix)
 	/*
@@ -119,7 +96,7 @@ func (t *TUN) NewTCPListener(paddr string, lport int) (*TUNTCPListener, error) {
 	if err != nil {
 		return nil, fmt.Errorf("could not parse paddr: %w", err)
 	}
-	if !t.tunIPNet.Contains(prefix.Addr().AsSlice()) {
+	if !tunIPNet.Contains(prefix.Addr().AsSlice()) {
 		return nil, fmt.Errorf("paddr is not within range of tunAddr")
 	}
 
@@ -128,7 +105,7 @@ func (t *TUN) NewTCPListener(paddr string, lport int) (*TUNTCPListener, error) {
 	// }
 
 	laddr := &net.TCPAddr{
-		IP:   t.tunIP,
+		IP:   tunIP,
 		Port: lport,
 	}
 	listener, err := net.ListenTCP("tcp", laddr)
@@ -139,8 +116,8 @@ func (t *TUN) NewTCPListener(paddr string, lport int) (*TUNTCPListener, error) {
 
 	l := &TUNTCPListener{
 		listener: listener,
-		tun:      t.tun,
-		tunIP:    t.tunIP,
+		tun:      tun,
+		tunIP:    tunIP,
 
 		srcToProxy:    make(map[netip.Addr]*netip.Addr),
 		proxyIP:       *proxyIP,
@@ -415,10 +392,9 @@ func (h *TUNTCPHandshaker) Handshake() (conn net.Conn, raddr net.Addr, err error
 	return h.Conn, addr, nil
 }
 
-func (t *TUN) NewIPListener() *TUNIPListener {
-	glog.Infof("created TUN IP listener on %s", t.name)
+func NewTUNIPListener(tun tun.Device) *TUNIPListener {
 	return &TUNIPListener{
-		tun:   t.tun,
+		tun:   tun,
 		pktCh: make(chan *PacketBuf, 0),
 		mutex: &sync.Mutex{},
 	}
@@ -435,6 +411,11 @@ func (l *TUNIPListener) Addr() net.Addr {
 }
 
 func (l *TUNIPListener) Accept() (Handshaker, error) {
+	ifname, err := l.tun.Name()
+	if err != nil {
+		return nil, fmt.Errorf("could not get name of TUN device: %w", err)
+	}
+
 	l.mutex.Lock()
 
 	buf, ok := <-l.pktCh
@@ -452,6 +433,7 @@ func (l *TUNIPListener) Accept() (Handshaker, error) {
 
 	return &TUNIPHandshaker{
 		Conn: &TUNIPConn{
+			ifname: ifname,
 			closeFunc: func() error {
 				once.Do(func() {
 					reader.Close()
@@ -519,14 +501,12 @@ func (r *PacketReader) Read(p []byte, offset int) (int, error) {
 	}
 }
 
-func (t *TUN) NewIPDialer() *TUNIPDialer {
-	glog.Infof("created TUN IP dialer on %s", t.name)
-	d := &TUNIPDialer{
-		tun:    t.tun,
+func NewTUNIPDialer(tun tun.Device) *TUNIPDialer {
+	// glog.Infof("created TUN IP dialer on %s", t.name)
+	return &TUNIPDialer{
+		tun:    tun,
 		ipToCh: make(map[netip.Addr]chan *PacketBuf),
 	}
-
-	return d
 }
 
 type TUNIPDialer struct {
@@ -534,9 +514,11 @@ type TUNIPDialer struct {
 
 	ipToChMutex sync.RWMutex
 	ipToCh      map[netip.Addr]chan *PacketBuf
+
+	addr net.Addr
 }
 
-func (d *TUNIPDialer) ReadPackets() error {
+func (d *TUNIPDialer) ReadPacketsRoutine() error {
 	for {
 		buf := allocateBuffer()
 		if _, err := buf.ReadFrom(d.tun); err != nil {
@@ -567,6 +549,10 @@ func (d *TUNIPDialer) ReadPackets() error {
 }
 
 func (d *TUNIPDialer) Dial(raddr net.Addr) (net.Conn, error) {
+	ifname, err := d.tun.Name()
+	if err != nil {
+		return nil, fmt.Errorf("could not get name of TUN device: %w", err)
+	}
 
 	conn := &TUNIPDialerConn{
 		tun:         d.tun,
@@ -576,6 +562,7 @@ func (d *TUNIPDialer) Dial(raddr net.Addr) (net.Conn, error) {
 	}
 
 	return &TUNIPConn{
+		ifname:    ifname,
 		closeFunc: func() error { return conn.Close() },
 		r:         conn,
 		w:         conn,
@@ -661,6 +648,8 @@ func (c *TUNIPDialerConn) Write(b []byte, offset int) (int, error) {
 }
 
 type TUNIPConn struct {
+	ifname string
+
 	once      sync.Once
 	closeFunc func() error
 
@@ -700,11 +689,11 @@ func (c *TUNIPConn) Close() error {
 }
 
 func (c *TUNIPConn) LocalAddr() net.Addr {
-	return tunLocalAddr
+	return &TUNAddr{c.ifname}
 }
 
 func (c *TUNIPConn) RemoteAddr() net.Addr {
-	return tunRemoteAddr
+	return &TUNAddr{c.ifname}
 }
 
 func (c *TUNIPConn) SetDeadline(t time.Time) error {
@@ -720,38 +709,20 @@ func (c *TUNIPConn) SetWriteDeadline(t time.Time) error {
 	panic("not implemented")
 }
 
-type TUNAddr struct{}
+type TUNAddr struct {
+	ifname string
+}
 
 func (a *TUNAddr) Network() string {
 	return "tun_if"
 }
 
 func (a *TUNAddr) String() string {
-	return a.Network()
+	if a.ifname == "" {
+		return a.Network()
+	}
+	return a.Network() + ":" + a.ifname
 }
-
-type TUNRemoteAddr struct{}
-
-func (a *TUNRemoteAddr) Network() string {
-	return ""
-}
-
-func (a *TUNRemoteAddr) String() string {
-	return "kernel/tun"
-}
-
-type TUNLocalAddr struct{}
-
-func (a *TUNLocalAddr) Network() string {
-	return ""
-}
-
-func (a *TUNLocalAddr) String() string {
-	return "user/tun"
-}
-
-var tunRemoteAddr = &TUNRemoteAddr{}
-var tunLocalAddr = &TUNLocalAddr{}
 
 type OffsetReader interface {
 	Read([]byte, int) (int, error)

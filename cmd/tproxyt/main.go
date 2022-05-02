@@ -150,24 +150,19 @@ func createTUN() (wgtun.Device, error) {
 }
 
 func client(tun wgtun.Device) error {
-	ttun, err := transport.NewTUN(tun, *tunip)
-	if err != nil {
-		return err
-	}
-
-	ipListener := ttun.NewIPListener()
+	ipListener := transport.NewTUNIPListener(tun)
 
 	var tcpListener *transport.TUNTCPListener
 	if *tunproxyport != 0 {
 		var err error
-		tcpListener, err = ttun.NewTCPListener(*tunproxyip, *tunproxyport)
+		tcpListener, err = transport.NewTUNTCPListener(tun, *tunip, *tunproxyip, *tunproxyport)
 		if err != nil {
 			return err
 		}
 	}
 
 	var wg errgroup.Group
-	wg.Go(func() error { return ttun.ReadPackets(tcpListener, ipListener) })
+	wg.Go(func() error { return transport.TUNReadPacketsRoutine(tun, tcpListener, ipListener) })
 	wg.Go(func() error {
 		dialer, err := transport.NewTLSTunnelDialerWithCertFile(*secret, "", *raddr, *sname, *cacert)
 		// dialer, err := transport.NewTCPDialer(*secret, "", *raddr)
@@ -190,15 +185,10 @@ func server(tun wgtun.Device) error {
 		return err
 	}
 
-	ttun, err := transport.NewTUN(tun, *tunip)
-	if err != nil {
-		return err
-	}
-
-	ipDialer := ttun.NewIPDialer()
+	ipDialer := transport.NewTUNIPDialer(tun)
 
 	var wg errgroup.Group
-	wg.Go(func() error { return ipDialer.ReadPackets() })
+	wg.Go(func() error { return ipDialer.ReadPacketsRoutine() })
 	wg.Go(func() error {
 		dialer := &transport.TUNTCPDialer{
 			TCP: &transport.TCPDialer{},

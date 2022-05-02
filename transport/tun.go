@@ -70,7 +70,7 @@ func (t *TUN) ReadPackets(tcpl *TUNTCPListener, ipl *TUNIPListener) error {
 	for {
 		buf := allocateBuffer()
 		if _, err := buf.ReadFrom(t.tun); err != nil {
-			return err
+			return fmt.Errorf("could not read from TUN device: %w", err)
 		}
 
 		ip := tcpip.IPPacket(buf.PacketBytes())
@@ -219,7 +219,6 @@ func advanceIP(ip net.IP, ipnet *net.IPNet) {
 func (l *TUNTCPListener) Accept() (Handshaker, error) {
 	conn, err := l.listener.Accept()
 	if err != nil {
-		conn.Close()
 		return nil, fmt.Errorf("could not accept TCP connection: %w", err)
 	}
 

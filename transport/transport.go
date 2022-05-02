@@ -37,16 +37,25 @@ type RoundTripper struct {
 }
 
 func (rt *RoundTripper) RoundTrip() error {
-	g := new(errgroup.Group)
+	g, c := errgroup.WithContext(context.Background())
+	ctx, cancel := context.WithCancel(c)
+	defer cancel()
+
 	for _, listener := range rt.Listeners {
 		l := listener
 		g.Go(func() error {
-			defer l.Close()
+			// cancel all other listeners
+			defer cancel()
+
+			go func() {
+				<-ctx.Done()
+				l.Close()
+			}()
+
 			for {
 				h, err := l.Accept()
 				if err != nil {
-					glog.Errorf("could not accept connection from listener %s: %s", l.Addr(), err)
-					continue
+					return fmt.Errorf("could not accept connection from listener %s: %w", l.Addr(), err)
 				}
 
 				go func() {

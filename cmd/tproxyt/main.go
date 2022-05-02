@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"flag"
 	"fmt"
 	"os"
@@ -173,7 +174,7 @@ func client(tun wgtun.Device) error {
 		listeners := []transport.Listener{ipListener, tcpListener}
 		rt := &transport.RoundTripper{Listeners: listeners, Dialer: dialer}
 
-		return rt.RoundTrip()
+		return rt.RoundTrip(context.Background())
 	})
 	return wg.Wait()
 }
@@ -187,8 +188,15 @@ func server(tun wgtun.Device) error {
 
 	ipDialer := transport.NewTUNIPDialer(tun)
 
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
 	var wg errgroup.Group
-	wg.Go(func() error { return ipDialer.ReadPacketsRoutine() })
+	wg.Go(func() error {
+		// cancel RoundTrip when tun is gone
+		defer cancel()
+		return ipDialer.ReadPacketsRoutine()
+	})
 	wg.Go(func() error {
 		dialer := &transport.TUNTCPDialer{
 			TCP: &transport.TCPDialer{},
@@ -197,7 +205,7 @@ func server(tun wgtun.Device) error {
 
 		rt := &transport.RoundTripper{Listeners: []transport.Listener{listener}, Dialer: dialer}
 
-		return rt.RoundTrip()
+		return rt.RoundTrip(ctx)
 	})
 	return wg.Wait()
 }

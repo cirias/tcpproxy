@@ -36,9 +36,9 @@ type RoundTripper struct {
 	Dialer    Dialer
 }
 
-func (rt *RoundTripper) RoundTrip() error {
-	g, c := errgroup.WithContext(context.Background())
-	ctx, cancel := context.WithCancel(c)
+func (rt *RoundTripper) RoundTrip(ctx context.Context) error {
+	g, ctx := errgroup.WithContext(ctx)
+	ctx, cancel := context.WithCancel(ctx)
 	defer cancel()
 
 	for _, listener := range rt.Listeners {

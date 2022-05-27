@@ -103,21 +103,29 @@ func copyConn(prefix string, i, o net.Conn) error {
 		if err := i.SetDeadline(time.Now().Add(time.Minute)); err != nil {
 			return fmt.Errorf("%s could not set deadline when read from %s: %w", prefix, i.RemoteAddr(), err)
 		}
-		glog.V(1).Infof("%s reading from %s", prefix, i.RemoteAddr())
+		if glog.V(3) {
+			glog.Infof("%s reading from %s", prefix, i.RemoteAddr())
+		}
 		n, err := i.Read(b)
 		if err != nil {
 			return fmt.Errorf("%s could not read from %s: %w", prefix, i.RemoteAddr(), err)
 		}
-		glog.V(1).Infof("%s read bytes from %s: %d", prefix, i.RemoteAddr(), n)
+		if glog.V(3) {
+			glog.Infof("%s read bytes from %s: %d", prefix, i.RemoteAddr(), n)
+		}
 
 		if err := o.SetDeadline(time.Now().Add(time.Minute)); err != nil {
 			return fmt.Errorf("%s could not set deadline when write to %s: %w", prefix, o.RemoteAddr(), err)
 		}
-		glog.V(1).Infof("%s writing to %s", prefix, o.RemoteAddr())
+		if glog.V(3) {
+			glog.Infof("%s writing to %s", prefix, o.RemoteAddr())
+		}
 		m, err := o.Write(b[:n])
 		if err != nil {
 			return fmt.Errorf("%s could not write to %s: %w", prefix, o.RemoteAddr(), err)
 		}
-		glog.V(1).Infof("%s written bytes to %s: %d", prefix, o.RemoteAddr(), m)
+		if glog.V(3) {
+			glog.Infof("%s written bytes to %s: %d", prefix, o.RemoteAddr(), m)
+		}
 	}
 }

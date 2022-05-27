@@ -35,7 +35,7 @@ var tunip = flag.String("tunip", "", "TUN device IP address in CIDR")
 // client
 var raddr = flag.String("raddr", "", "remote connecting address")
 var sname = flag.String("sname", "", "TLS server name")
-var tunproxyip = flag.String("tunproxyip", "", "TUN device proxy IP for TCP")
+var tunmockip = flag.String("tunmockip", "", "TUN device mock IP for TCP")
 var tunproxyport = flag.Int("tunproxyport", 0, "TUN device proxy port that TCP server bind to")
 
 // server
@@ -156,7 +156,7 @@ func client(tun wgtun.Device) error {
 	var tcpListener *transport.TUNTCPListener
 	if *tunproxyport != 0 {
 		var err error
-		tcpListener, err = transport.NewTUNTCPListener(tun, *tunip, *tunproxyip, *tunproxyport)
+		tcpListener, err = transport.NewTUNTCPListener(tun, *tunip, *tunmockip, *tunproxyport)
 		if err != nil {
 			return err
 		}

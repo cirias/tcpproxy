@@ -23,7 +23,7 @@ server:
 	iptables -t nat -A POSTROUTING -o eth0 -j MASQUERADE
 
 client:
-	./tproxyt -logtostderr -v 1 -mode client -cacert ssl/ca_cert.pem -raddr 172.17.0.2:443 -secret milk -sname www.example.com -tunip 192.168.200.2/24 -tunproxyip 192.168.200.128/25 -tunproxyport 12345
+	./tproxyt -logtostderr -v 1 -mode client -cacert ssl/ca_cert.pem -raddr 172.17.0.2:443 -secret milk -sname www.example.com -tunip 192.168.200.2/24 -tunmockip 192.168.200.128 -tunproxyport 12345
 	ip addr add 192.168.200.2/24 dev tun0
 	ip link set dev tun0 up
 	ip rule add not fwmark 0x00100 table 400

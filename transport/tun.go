@@ -18,16 +18,14 @@ import (
 )
 
 type TCPConnState struct {
-	srcip netip.Addr
-	state byte
-	seq   int
+	clientFIN     byte
+	serverFIN     byte
+	serverRetrans byte
+	// last Seq of a FIN packet, either from client or server
+	lastFINSeq int
+	// last Seq of a non-FIN packet from server
+	lastServerSeq int
 }
-
-const (
-	TCPSynSent byte = 1 + iota
-	TCPFinWait
-	TCPLastAck
-)
 
 func TUNReadPacketsRoutine(tun tun.Device, tcpl *TUNTCPListener, ipl *TUNIPListener) error {
 	defer func() {
@@ -65,44 +63,19 @@ func TUNReadPacketsRoutine(tun tun.Device, tcpl *TUNTCPListener, ipl *TUNIPListe
 	}
 }
 
-func NewTUNTCPListener(tun tun.Device, tunAddr, paddr string, lport int) (*TUNTCPListener, error) {
+func NewTUNTCPListener(tun tun.Device, tunAddr, clientMockIPAddr string, lport int) (*TUNTCPListener, error) {
 	tunIP, tunIPNet, err := net.ParseCIDR(tunAddr)
 	if err != nil {
 		return nil, fmt.Errorf("could not parse tunAddr: %w", err)
 	}
 
-	var proxyIP = new(netip.Addr)
-	var proxyIPPrefix = new(netip.Prefix)
-	/*
-	 *   if paddr == "" {
-	 *     ip, _ := netip.AddrFromSlice(t.tunIP.To4())
-	 *
-	 *     ones, bits := t.tunIPNet.Mask.Size()
-	 *     if (bits - ones) < 8 {
-	 *       return nil, fmt.Errorf("Network size of TUN cannot be smaller than 2^8 when proxy address is not specified")
-	 *     }
-	 *
-	 *     // flip the highest bit of the last byte,
-	 *     // aka the 25th bit for IPv4 or the 121th bit for IPv6
-	 *     ipBytes := ip.AsSlice()
-	 *     ipBytes[len(ipBytes)-1] ^= 1 << 7
-	 *     ip, _ = netip.AddrFromSlice(ipBytes)
-	 *
-	 *     *proxyIP = ip
-	 *     *proxyIPPrefix = netip.PrefixFrom(ip, ip.BitLen()-7)
-	 *   } else {
-	 */
-	prefix, err := netip.ParsePrefix(paddr)
-	if err != nil {
-		return nil, fmt.Errorf("could not parse paddr: %w", err)
+	clientMockIP := net.ParseIP(clientMockIPAddr)
+	if clientMockIP == nil {
+		return nil, fmt.Errorf("could not parse clientMockIPAddr: %w", err)
 	}
-	if !tunIPNet.Contains(prefix.Addr().AsSlice()) {
-		return nil, fmt.Errorf("paddr is not within range of tunAddr")
+	if !tunIPNet.Contains(clientMockIP) {
+		return nil, fmt.Errorf("clientMockIPAddr is not within range of tunAddr")
 	}
-
-	*proxyIP = prefix.Addr()
-	*proxyIPPrefix = prefix
-	// }
 
 	laddr := &net.TCPAddr{
 		IP:   tunIP,
@@ -112,19 +85,16 @@ func NewTUNTCPListener(tun tun.Device, tunAddr, paddr string, lport int) (*TUNTC
 	if err != nil {
 		return nil, fmt.Errorf("could not create TCP listener: %w", err)
 	}
-	glog.Infof("created TUN TCP listener, proxyIP=%s proxyIPNet=%s laddr=%s", proxyIP, proxyIPPrefix, listener.Addr())
+	glog.Infof("created TUN TCP listener, clientMockIP=%s laddr=%s", clientMockIP, listener.Addr())
 
 	l := &TUNTCPListener{
 		listener: listener,
 		tun:      tun,
 		tunIP:    tunIP,
 
-		srcToProxy:    make(map[netip.Addr]*netip.Addr),
-		proxyIP:       *proxyIP,
-		proxyIPPrefix: *proxyIPPrefix,
-		proxyToState:  make(map[netip.Addr]map[uint16]*TCPConnState),
-
-		proxyToDst: make(map[netip.Addr]map[uint16]*net.TCPAddr),
+		clientMockIP:         clientMockIP,
+		clientPortToTCPState: make(map[uint16]*TCPConnState),
+		clientPortToDstAddr:  make(map[uint16]*net.TCPAddr),
 
 		pktCh: make(chan *PacketBuf, 0),
 	}
@@ -143,30 +113,15 @@ type TUNTCPListener struct {
 
 	listener net.Listener
 
-	srcToProxy    map[netip.Addr]*netip.Addr
-	proxyIP       netip.Addr
-	proxyIPPrefix netip.Prefix
-	proxyToState  map[netip.Addr]map[uint16]*TCPConnState
+	clientMockIP net.IP
 
-	// src ip -> (src port -> dst address)
-	proxyToDst      map[netip.Addr]map[uint16]*net.TCPAddr
-	proxyToDstMutex sync.RWMutex
+	clientPortToTCPState     map[uint16]*TCPConnState
+	clientPortToDstAddr      map[uint16]*net.TCPAddr
+	clientPortToDstAddrMutex sync.RWMutex
 
 	pktCh chan *PacketBuf
-}
 
-func (l *TUNTCPListener) allocateProxyIP() *netip.Addr {
-	bits := l.proxyIPPrefix.Addr().BitLen()
-	ones := l.proxyIPPrefix.Bits()
-	size := 1 << (bits - ones)
-	for i := 0; i < size; i++ {
-		l.proxyIP = l.proxyIP.Next()
-		if l.proxyIPPrefix.Contains(l.proxyIP) && l.proxyToState[l.proxyIP] == nil {
-			ip := l.proxyIP
-			return &ip
-		}
-	}
-	return nil
+	numOfConn int32
 }
 
 func advanceIP(ip net.IP, ipnet *net.IPNet) {
@@ -211,14 +166,10 @@ func (l *TUNTCPListener) Addr() net.Addr {
 }
 
 func (l *TUNTCPListener) tcpDaddr(proxyAddr *net.TCPAddr) *net.TCPAddr {
-	l.proxyToDstMutex.RLock()
-	defer l.proxyToDstMutex.RUnlock()
+	l.clientPortToDstAddrMutex.RLock()
+	defer l.clientPortToDstAddrMutex.RUnlock()
 
-	portToDst := l.proxyToDst[proxyAddr.AddrPort().Addr()]
-	if portToDst == nil {
-		return nil
-	}
-	return portToDst[uint16(proxyAddr.Port)]
+	return l.clientPortToDstAddr[uint16(proxyAddr.Port)]
 }
 
 func (l *TUNTCPListener) mapTCPPackets() error {
@@ -259,26 +210,21 @@ func (l *TUNTCPListener) mapOneTCPPacket(buf *PacketBuf) error {
 	srcPort := tcp.SrcPort()
 	dstPort := tcp.DstPort()
 
-	if srcIP.Equal(laddr.IP) && int(srcPort) == laddr.Port {
+	if dstIP.Equal(l.clientMockIP) && srcIP.Equal(laddr.IP) && int(srcPort) == laddr.Port {
 		// translate packets came from TCP server
 		// NOTE: l.tunIP and laddr.IP are the same
 
-		dstip, _ := netip.AddrFromSlice(dstIP)
-
 		var oaddr *net.TCPAddr
 		{
-			l.proxyToDstMutex.RLock()
-			portToDst := l.proxyToDst[dstip]
-			if portToDst != nil {
-				oaddr = portToDst[dstPort]
-			}
-			l.proxyToDstMutex.RUnlock()
+			l.clientPortToDstAddrMutex.RLock()
+			oaddr = l.clientPortToDstAddr[dstPort]
+			l.clientPortToDstAddrMutex.RUnlock()
 		}
 		if oaddr == nil {
 			return nil
 		}
 
-		l.handleTermination(&tcp, dstip, dstPort)
+		l.handleTermination(&tcp, dstPort, false)
 
 		ip4.SetSrcIP(oaddr.IP)
 		tcp.SetSrcPort(uint16(oaddr.Port))
@@ -286,45 +232,24 @@ func (l *TUNTCPListener) mapOneTCPPacket(buf *PacketBuf) error {
 	} else if srcIP.Equal(l.tunIP) {
 		// translate packets came from kernel TCP stack
 
-		srcip, _ := netip.AddrFromSlice(srcIP)
-		pproxyip := l.srcToProxy[srcip]
-
 		if tcp.SYN() && !tcp.ACK() {
+			l.numOfConn++
 			glog.Infof("initialize connection %s:%d to %s:%d", l.tunIP, srcPort, dstIP, dstPort)
 
-			if pproxyip == nil {
-				pproxyip = l.allocateProxyIP()
-				if pproxyip == nil {
-					return fmt.Errorf("cannot allocate new proxy IP")
-				}
-				l.srcToProxy[srcip] = pproxyip
-				l.proxyToState[*pproxyip] = make(map[uint16]*TCPConnState)
-				glog.Infof("new proxy IP %s allocated for src %s", pproxyip, srcip)
-			}
-			l.proxyToState[*pproxyip][srcPort] = &TCPConnState{srcip, TCPSynSent, 0}
+			l.clientPortToTCPState[srcPort] = &TCPConnState{}
 
 			dst := make(net.IP, len(dstIP))
 			copy(dst, dstIP)
 			{
-				l.proxyToDstMutex.Lock()
-				portToDst := l.proxyToDst[*pproxyip]
-				if portToDst == nil {
-					portToDst = make(map[uint16]*net.TCPAddr)
-					l.proxyToDst[*pproxyip] = portToDst
-				}
-				portToDst[srcPort] = &net.TCPAddr{IP: dst, Port: int(dstPort)}
-				l.proxyToDstMutex.Unlock()
+				l.clientPortToDstAddrMutex.Lock()
+				l.clientPortToDstAddr[srcPort] = &net.TCPAddr{IP: dst, Port: int(dstPort)}
+				l.clientPortToDstAddrMutex.Unlock()
 			}
 		}
 
-		if pproxyip == nil {
-			glog.Infof("could not find proxy IP for source %s", srcIP)
-			return nil
-		}
+		l.handleTermination(&tcp, srcPort, true)
 
-		l.handleTermination(&tcp, *pproxyip, srcPort)
-
-		ip4.SetSrcIP(pproxyip.AsSlice())
+		ip4.SetSrcIP(l.clientMockIP)
 		ip4.SetDstIP(laddr.IP)
 		tcp.SetDstPort(uint16(laddr.Port))
 	}
@@ -336,42 +261,64 @@ func (l *TUNTCPListener) mapOneTCPPacket(buf *PacketBuf) error {
 	return err
 }
 
-func (l *TUNTCPListener) handleTermination(tcp *tcpip.TCPPacket, proxyip netip.Addr, port uint16) {
-	portToState := l.proxyToState[proxyip]
-	if portToState == nil {
-		return
-	}
-	s := portToState[port]
+func (l *TUNTCPListener) handleTermination(tcp *tcpip.TCPPacket, port uint16, isFromClient bool) {
+	s := l.clientPortToTCPState[port]
 	if s == nil {
 		return
 	}
 
-	if tcp.RST() || tcp.ACK() && s.state == TCPLastAck && tcp.ACKNum() == s.seq+1 {
+	if tcp.FIN() {
+		if glog.V(1) {
+			glog.Infof("FIN of client port %d isFromClient:%t", port, isFromClient)
+		}
+
+		if isFromClient {
+			s.clientFIN++
+		} else {
+			s.serverFIN++
+		}
+
+		if s.clientFIN > 0 && s.serverFIN > 0 {
+			s.lastFINSeq = tcp.SeqNum()
+		}
+	} else if !isFromClient {
+		seq := tcp.SeqNum()
+		if seq == s.lastServerSeq {
+			s.serverRetrans++
+		} else {
+			s.lastServerSeq = seq
+			s.serverRetrans = 0
+		}
+	}
+
+	if tcp.RST() ||
+		// true if proxy server keeps sending FIN without receiving reply from the client
+		s.serverFIN > 3 ||
+		(s.serverFIN > 0 && s.serverRetrans > 3) ||
+		// true if the packet is the final ACK
+		s.clientFIN > 0 && s.serverFIN > 0 && tcp.ACK() && tcp.ACKNum() == s.lastFINSeq+1 {
+
+		l.numOfConn--
 		glog.Infof("terminate connection from %s:%d", l.tunIP, port)
 		{
-			l.proxyToDstMutex.Lock()
-			portToDst := l.proxyToDst[proxyip]
-			delete(portToDst, port)
-			if len(portToDst) == 0 {
-				delete(l.proxyToDst, proxyip)
+			l.clientPortToDstAddrMutex.Lock()
+			delete(l.clientPortToDstAddr, port)
+			if len(l.clientPortToDstAddr) == 0 {
+				// replace with a new map, so then the old can be GC
+				l.clientPortToDstAddr = make(map[uint16]*net.TCPAddr)
 			}
-			l.proxyToDstMutex.Unlock()
+			l.clientPortToDstAddrMutex.Unlock()
 		}
 
-		delete(l.proxyToState[proxyip], port)
-		if len(l.proxyToState[proxyip]) == 0 {
-			delete(l.proxyToState, proxyip)
-			delete(l.srcToProxy, s.srcip)
+		delete(l.clientPortToTCPState, port)
+		if len(l.clientPortToTCPState) == 0 {
+			// replace with a new map, so then the old can be GC
+			l.clientPortToTCPState = make(map[uint16]*TCPConnState)
 		}
-	} else if tcp.FIN() {
-		glog.V(1).Infof("FIN of %s:%d", proxyip, port)
 
-		switch s.state {
-		case TCPSynSent:
-			s.state = TCPFinWait
-		case TCPFinWait:
-			s.state = TCPLastAck
-			s.seq = tcp.SeqNum()
+		if glog.V(1) {
+			glog.Infof("remain_conns:%d num_conn_state:%d num_dst_addr:%d", l.numOfConn, len(l.clientPortToTCPState), len(l.clientPortToDstAddr))
+			glog.Infof("%d RST:%t ACK:%t ACKNum:%d lastFINSeq:%d", port, tcp.RST(), tcp.ACK(), tcp.ACKNum(), s.lastFINSeq)
 		}
 	}
 }

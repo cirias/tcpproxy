@@ -9,6 +9,7 @@ import (
 	"net/netip"
 	"sync"
 	"time"
+	"unsafe"
 
 	"github.com/golang/glog"
 
@@ -16,16 +17,6 @@ import (
 
 	"github.com/cirias/tcpproxy/tcpip"
 )
-
-type TCPConnState struct {
-	clientFIN     byte
-	serverFIN     byte
-	serverRetrans byte
-	// last Seq of a FIN packet, either from client or server
-	lastFINSeq int
-	// last Seq of a non-FIN packet from server
-	lastServerSeq int
-}
 
 func TUNReadPacketsRoutine(tun tun.Device, tcpl *TUNTCPListener, ipl *TUNIPListener) error {
 	defer func() {
@@ -92,12 +83,12 @@ func NewTUNTCPListener(tun tun.Device, tunAddr, clientMockIPAddr string, lport i
 		tun:      tun,
 		tunIP:    tunIP,
 
-		clientMockIP:         clientMockIP,
-		clientPortToTCPState: make(map[uint16]*TCPConnState),
-		clientPortToDstAddr:  make(map[uint16]*net.TCPAddr),
+		clientMockIP: clientMockIP,
 
 		pktCh: make(chan *PacketBuf, 0),
 	}
+	glog.Infof("sizeof l.clientPortToDstAddr=%d", unsafe.Sizeof(l.clientPortToDstAddr))
+
 	go func() {
 		if err := l.mapTCPPackets(); err != nil {
 			glog.Fatalln(err)
@@ -115,13 +106,10 @@ type TUNTCPListener struct {
 
 	clientMockIP net.IP
 
-	clientPortToTCPState     map[uint16]*TCPConnState
-	clientPortToDstAddr      map[uint16]*net.TCPAddr
+	clientPortToDstAddr      [1 << 16]netip.AddrPort // 2M bytes on 64bit, 1536K bytes on 32bit
 	clientPortToDstAddrMutex sync.RWMutex
 
 	pktCh chan *PacketBuf
-
-	numOfConn int32
 }
 
 func advanceIP(ip net.IP, ipnet *net.IPNet) {
@@ -165,11 +153,11 @@ func (l *TUNTCPListener) Addr() net.Addr {
 	return l.listener.Addr()
 }
 
-func (l *TUNTCPListener) tcpDaddr(proxyAddr *net.TCPAddr) *net.TCPAddr {
+func (l *TUNTCPListener) tcpDaddr(clientPort int) netip.AddrPort {
 	l.clientPortToDstAddrMutex.RLock()
 	defer l.clientPortToDstAddrMutex.RUnlock()
 
-	return l.clientPortToDstAddr[uint16(proxyAddr.Port)]
+	return l.clientPortToDstAddr[clientPort]
 }
 
 func (l *TUNTCPListener) mapTCPPackets() error {
@@ -214,40 +202,33 @@ func (l *TUNTCPListener) mapOneTCPPacket(buf *PacketBuf) error {
 		// translate packets came from TCP server
 		// NOTE: l.tunIP and laddr.IP are the same
 
-		var oaddr *net.TCPAddr
+		var oaddr netip.AddrPort
 		{
 			l.clientPortToDstAddrMutex.RLock()
 			oaddr = l.clientPortToDstAddr[dstPort]
 			l.clientPortToDstAddrMutex.RUnlock()
 		}
-		if oaddr == nil {
-			return nil
-		}
 
-		l.handleTermination(&tcp, dstPort, false)
-
-		ip4.SetSrcIP(oaddr.IP)
-		tcp.SetSrcPort(uint16(oaddr.Port))
+		ip4.SetSrcIP(oaddr.Addr().AsSlice())
+		tcp.SetSrcPort(oaddr.Port())
 		ip4.SetDstIP(l.tunIP)
 	} else if srcIP.Equal(l.tunIP) {
 		// translate packets came from kernel TCP stack
 
 		if tcp.SYN() && !tcp.ACK() {
-			l.numOfConn++
-			glog.Infof("initialize connection %s:%d to %s:%d", l.tunIP, srcPort, dstIP, dstPort)
+			glog.Infof("initialize connection state for %s:%d to %s:%d", l.tunIP, srcPort, dstIP, dstPort)
 
-			l.clientPortToTCPState[srcPort] = &TCPConnState{}
+			dst, ok := netip.AddrFromSlice(dstIP)
+			if !ok {
+				glog.Errorf("could not convert net.IP to netip.Addr: %s", dstIP)
+			}
 
-			dst := make(net.IP, len(dstIP))
-			copy(dst, dstIP)
 			{
 				l.clientPortToDstAddrMutex.Lock()
-				l.clientPortToDstAddr[srcPort] = &net.TCPAddr{IP: dst, Port: int(dstPort)}
+				l.clientPortToDstAddr[srcPort] = netip.AddrPortFrom(dst, dstPort)
 				l.clientPortToDstAddrMutex.Unlock()
 			}
 		}
-
-		l.handleTermination(&tcp, srcPort, true)
 
 		ip4.SetSrcIP(l.clientMockIP)
 		ip4.SetDstIP(laddr.IP)
@@ -261,68 +242,6 @@ func (l *TUNTCPListener) mapOneTCPPacket(buf *PacketBuf) error {
 	return err
 }
 
-func (l *TUNTCPListener) handleTermination(tcp *tcpip.TCPPacket, port uint16, isFromClient bool) {
-	s := l.clientPortToTCPState[port]
-	if s == nil {
-		return
-	}
-
-	if tcp.FIN() {
-		if glog.V(1) {
-			glog.Infof("FIN of client port %d isFromClient:%t", port, isFromClient)
-		}
-
-		if isFromClient {
-			s.clientFIN++
-		} else {
-			s.serverFIN++
-		}
-
-		if s.clientFIN > 0 && s.serverFIN > 0 {
-			s.lastFINSeq = tcp.SeqNum()
-		}
-	} else if !isFromClient {
-		seq := tcp.SeqNum()
-		if seq == s.lastServerSeq {
-			s.serverRetrans++
-		} else {
-			s.lastServerSeq = seq
-			s.serverRetrans = 0
-		}
-	}
-
-	if tcp.RST() ||
-		// true if proxy server keeps sending FIN without receiving reply from the client
-		s.serverFIN > 3 ||
-		(s.serverFIN > 0 && s.serverRetrans > 3) ||
-		// true if the packet is the final ACK
-		s.clientFIN > 0 && s.serverFIN > 0 && tcp.ACK() && tcp.ACKNum() == s.lastFINSeq+1 {
-
-		l.numOfConn--
-		glog.Infof("terminate connection from %s:%d", l.tunIP, port)
-		{
-			l.clientPortToDstAddrMutex.Lock()
-			delete(l.clientPortToDstAddr, port)
-			if len(l.clientPortToDstAddr) == 0 {
-				// replace with a new map, so then the old can be GC
-				l.clientPortToDstAddr = make(map[uint16]*net.TCPAddr)
-			}
-			l.clientPortToDstAddrMutex.Unlock()
-		}
-
-		delete(l.clientPortToTCPState, port)
-		if len(l.clientPortToTCPState) == 0 {
-			// replace with a new map, so then the old can be GC
-			l.clientPortToTCPState = make(map[uint16]*TCPConnState)
-		}
-
-		if glog.V(1) {
-			glog.Infof("remain_conns:%d num_conn_state:%d num_dst_addr:%d", l.numOfConn, len(l.clientPortToTCPState), len(l.clientPortToDstAddr))
-			glog.Infof("%d RST:%t ACK:%t ACKNum:%d lastFINSeq:%d", port, tcp.RST(), tcp.ACK(), tcp.ACKNum(), s.lastFINSeq)
-		}
-	}
-}
-
 type TUNTCPHandshaker struct {
 	net.Conn
 	listener *TUNTCPListener
@@ -331,11 +250,12 @@ type TUNTCPHandshaker struct {
 func (h *TUNTCPHandshaker) Handshake() (conn net.Conn, raddr net.Addr, err error) {
 	saddr := h.Conn.RemoteAddr().(*net.TCPAddr)
 
-	addr := h.listener.tcpDaddr(saddr)
+	addr := net.TCPAddrFromAddrPort(h.listener.tcpDaddr(saddr.Port))
 	if addr == nil {
 		h.Conn.Close()
 		return nil, nil, fmt.Errorf("no original address found for port %d", saddr.Port)
 	}
+
 	return h.Conn, addr, nil
 }
 

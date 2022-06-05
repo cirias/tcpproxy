@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"net"
+	"sync"
 	"time"
 
 	"golang.org/x/sync/errgroup"
@@ -82,19 +83,32 @@ func (rt *RoundTripper) handle(handshaker Handshaker) error {
 	glog.Infof("connected through proxy [%s <-> %s]", handshaker.RemoteAddr(), raddr)
 	defer glog.Infof("connection closed [%s <-> %s]", handshaker.RemoteAddr(), raddr)
 
-	g := new(errgroup.Group)
-	g.Go(func() error {
+	errOnce := sync.Once{}
+	wg := sync.WaitGroup{}
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
 		defer inConn.Close()
 		defer outConn.Close()
-		return copyConn("->", inConn, outConn)
-	})
-	g.Go(func() error {
+		e := copyConn("->", inConn, outConn)
+		errOnce.Do(func() {
+			err = e
+		})
+	}()
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
 		defer inConn.Close()
 		defer outConn.Close()
-		return copyConn("<-", outConn, inConn)
-	})
+		e := copyConn("<-", outConn, inConn)
+		errOnce.Do(func() {
+			err = e
+		})
+	}()
 
-	return g.Wait()
+	wg.Wait()
+
+	return err
 }
 
 func copyConn(prefix string, i, o net.Conn) error {

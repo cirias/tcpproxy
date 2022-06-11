@@ -33,3 +33,9 @@ client:
 # outdated
 gdb_client:
 	gdb --args ./tproxyc -logtostderr -v 1 -cacert ssl/ca_cert.pem -raddr 172.17.0.2:443 -secret milk -sname www.example.com -tunip 192.168.200.2/24 -tunproxyport 12345
+
+docker_run_build:
+	docker run --rm -it -v $(shell pwd):/app -w /app golang:1.18-bullseye bash
+
+build-race:
+	go build -race ./cmd/tproxyt

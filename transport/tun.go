@@ -323,6 +323,10 @@ type TUNIPHandshaker struct {
 	Conn *TUNIPConn
 }
 
+func (h *TUNIPHandshaker) Close() error {
+	return h.Conn.Close()
+}
+
 func (h *TUNIPHandshaker) RemoteAddr() net.Addr {
 	return h.Conn.RemoteAddr()
 }

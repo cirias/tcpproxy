@@ -2,7 +2,9 @@ package transport
 
 import (
 	"context"
+	"errors"
 	"fmt"
+	"io"
 	"net"
 	"sync"
 	"time"
@@ -24,6 +26,7 @@ type Listener interface {
 }
 
 type Handshaker interface {
+	Close() error
 	Handshake() (net.Conn, net.Addr, error)
 	RemoteAddr() net.Addr
 }
@@ -60,7 +63,8 @@ func (rt *RoundTripper) RoundTrip(ctx context.Context) error {
 				}
 
 				go func() {
-					if err := rt.handle(h); err != nil {
+					defer h.Close()
+					if err := rt.handle(h); err != nil && !errors.Is(err, io.EOF) {
 						glog.Errorln(err)
 					}
 				}()

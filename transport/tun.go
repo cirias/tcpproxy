@@ -392,8 +392,14 @@ type TUNIPDialer struct {
 func (d *TUNIPDialer) ReadPacketsRoutine() error {
 	for {
 		buf := allocateBuffer()
-		if _, err := buf.ReadFrom(d.tun); err != nil {
+		n, err := buf.ReadFrom(d.tun)
+		if err != nil {
+			releaseBuffer(buf)
 			return fmt.Errorf("could not read from TUN device: %w", err)
+		}
+		if n == 0 {
+			releaseBuffer(buf)
+			continue
 		}
 
 		ip := tcpip.IPPacket(buf.PacketBytes())
@@ -545,6 +551,7 @@ func (c *TUNIPConn) Write(b []byte) (int, error) {
 		}
 
 		n := int(binary.BigEndian.Uint16(c.wbuf.Bytes()[:2]))
+		// FIXME how could n be zero?
 		if c.wbuf.Len() < 4+n {
 			return len(b), nil
 		}

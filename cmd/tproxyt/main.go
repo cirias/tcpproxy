@@ -188,10 +188,17 @@ func server(tun wgtun.Device) error {
 
 	ipDialer := transport.NewTUNIPDialer(tun)
 
+	peeringCollector := transport.NewPeeringCollector()
+	collectorServer := transport.NewCollectorServer(peeringCollector)
+
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
 	var wg errgroup.Group
+	wg.Go(func() error {
+		defer cancel()
+		return collectorServer.ListenAndServe(ctx, "/var/run/tproxy.sock")
+	})
 	wg.Go(func() error {
 		// cancel RoundTrip when tun is gone
 		defer cancel()
@@ -203,7 +210,7 @@ func server(tun wgtun.Device) error {
 			IP:  ipDialer,
 		}
 
-		rt := &transport.RoundTripper{Listeners: []transport.Listener{listener}, Dialer: dialer}
+		rt := &transport.RoundTripper{Listeners: []transport.Listener{listener}, Dialer: dialer, Collector: peeringCollector}
 
 		return rt.RoundTrip(ctx)
 	})

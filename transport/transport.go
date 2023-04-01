@@ -39,6 +39,7 @@ type Dialer interface {
 type RoundTripper struct {
 	Listeners []Listener
 	Dialer    Dialer
+	Collector *PeeringCollector
 }
 
 func (rt *RoundTripper) RoundTrip(ctx context.Context) error {
@@ -76,10 +77,14 @@ func (rt *RoundTripper) RoundTrip(ctx context.Context) error {
 }
 
 func (rt *RoundTripper) handle(answerer Answerer) error {
+	peer := rt.Collector.CreatePeering(answerer)
+
 	inConn, raddr, err := answerer.Answer()
 	if err != nil {
 		return fmt.Errorf("could not handshake [from %s]: %w", answerer.RemoteAddr(), err)
 	}
+
+	peer.AnsweredDailing(raddr)
 
 	outConn, err := rt.Dialer.Dial(raddr)
 	if err != nil {
@@ -88,6 +93,8 @@ func (rt *RoundTripper) handle(answerer Answerer) error {
 	glog.Infof("connected through proxy [%s <-> %s]", answerer.RemoteAddr(), raddr)
 	defer glog.Infof("connection closed [%s <-> %s]", answerer.RemoteAddr(), raddr)
 
+	peer.DialedTransmitting(outConn)
+
 	errOnce := sync.Once{}
 	wg := sync.WaitGroup{}
 	wg.Add(1)
@@ -95,7 +102,8 @@ func (rt *RoundTripper) handle(answerer Answerer) error {
 		defer wg.Done()
 		defer inConn.Close()
 		defer outConn.Close()
-		e := copyConn("->", inConn, outConn)
+		e := copyConn("->", inConn, outConn, peer.FromInToOut())
+		peer.Errored(e)
 		errOnce.Do(func() {
 			err = e
 		})
@@ -105,7 +113,8 @@ func (rt *RoundTripper) handle(answerer Answerer) error {
 		defer wg.Done()
 		defer inConn.Close()
 		defer outConn.Close()
-		e := copyConn("<-", outConn, inConn)
+		e := copyConn("<-", outConn, inConn, peer.FromInToOut())
+		peer.Errored(e)
 		errOnce.Do(func() {
 			err = e
 		})
@@ -116,7 +125,7 @@ func (rt *RoundTripper) handle(answerer Answerer) error {
 	return err
 }
 
-func copyConn(prefix string, i, o net.Conn) error {
+func copyConn(prefix string, i, o net.Conn, c ReadWriteCollector) error {
 	b := make([]byte, 8*1024)
 	for {
 		if err := i.SetDeadline(time.Now().Add(time.Minute)); err != nil {
@@ -129,6 +138,7 @@ func copyConn(prefix string, i, o net.Conn) error {
 		if err != nil {
 			return fmt.Errorf("%s could not read from %s: %w", prefix, i.RemoteAddr(), err)
 		}
+		c.Read(n)
 		if glog.V(3) {
 			glog.Infof("%s read bytes from %s: %d", prefix, i.RemoteAddr(), n)
 		}
@@ -143,6 +153,7 @@ func copyConn(prefix string, i, o net.Conn) error {
 		if err != nil {
 			return fmt.Errorf("%s could not write to %s: %w", prefix, o.RemoteAddr(), err)
 		}
+		c.Write(m)
 		if glog.V(3) {
 			glog.Infof("%s written bytes to %s: %d", prefix, o.RemoteAddr(), m)
 		}

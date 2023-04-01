@@ -62,14 +62,14 @@ func TestTun(t *testing.T) {
 		g := new(errgroup.Group)
 		g.Go(func() error {
 			fmt.Println("accepting tcp")
-			handshaker, err := tcpListener.Accept()
+			answerer, err := tcpListener.Accept()
 			if err != nil {
 				return err
 			}
 
-			fmt.Println(handshaker.RemoteAddr().String())
+			fmt.Println(answerer.RemoteAddr().String())
 
-			c, raddr, err := handshaker.Handshake()
+			c, raddr, err := answerer.Answer()
 			if err != nil {
 				return err
 			}
@@ -124,14 +124,14 @@ func TestTun(t *testing.T) {
 		g := new(errgroup.Group)
 		g.Go(func() error {
 			fmt.Println("accepting ip conn")
-			handshaker, err := ipListener.Accept()
+			answerer, err := ipListener.Accept()
 			if err != nil {
 				return err
 			}
 
-			fmt.Println("handshaking with", handshaker.RemoteAddr())
+			fmt.Println("handshaking with", answerer.RemoteAddr())
 
-			c, raddr, err := handshaker.Handshake()
+			c, raddr, err := answerer.Answer()
 			if err != nil {
 				return err
 			}

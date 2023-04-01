@@ -3,6 +3,7 @@ package transport
 import (
 	"bytes"
 	"encoding/binary"
+	"errors"
 	"fmt"
 	"io"
 	"net"
@@ -136,13 +137,13 @@ func advanceIP(ip net.IP, ipnet *net.IPNet) {
 	}
 }
 
-func (l *TUNTCPListener) Accept() (Handshaker, error) {
+func (l *TUNTCPListener) Accept() (Answerer, error) {
 	conn, err := l.listener.Accept()
 	if err != nil {
 		return nil, fmt.Errorf("could not accept TCP connection: %w", err)
 	}
 
-	return &TUNTCPHandshaker{conn, l}, nil
+	return &TUNTCPAnswerer{conn, l}, nil
 }
 
 func (l *TUNTCPListener) Close() error {
@@ -242,12 +243,12 @@ func (l *TUNTCPListener) mapOneTCPPacket(buf *PacketBuf) error {
 	return err
 }
 
-type TUNTCPHandshaker struct {
+type TUNTCPAnswerer struct {
 	net.Conn
 	listener *TUNTCPListener
 }
 
-func (h *TUNTCPHandshaker) Handshake() (conn net.Conn, raddr net.Addr, err error) {
+func (h *TUNTCPAnswerer) Answer() (conn net.Conn, raddr net.Addr, err error) {
 	saddr := h.Conn.RemoteAddr().(*net.TCPAddr)
 
 	addr := net.TCPAddrFromAddrPort(h.listener.tcpDaddr(saddr.Port))
@@ -277,7 +278,7 @@ func (l *TUNIPListener) Addr() net.Addr {
 	return &TUNAddr{}
 }
 
-func (l *TUNIPListener) Accept() (Handshaker, error) {
+func (l *TUNIPListener) Accept() (Answerer, error) {
 	ifname, err := l.tun.Name()
 	if err != nil {
 		return nil, fmt.Errorf("could not get name of TUN device: %w", err)
@@ -298,7 +299,7 @@ func (l *TUNIPListener) Accept() (Handshaker, error) {
 		firstPkt: buf,
 	}
 
-	return &TUNIPHandshaker{
+	return &TUNIPAnswerer{
 		Conn: &TUNIPConn{
 			ifname: ifname,
 			closeFunc: func() error {
@@ -319,19 +320,23 @@ func (l *TUNIPListener) Close() error {
 	return nil
 }
 
-type TUNIPHandshaker struct {
+type TUNIPAnswerer struct {
 	Conn *TUNIPConn
 }
 
-func (h *TUNIPHandshaker) Close() error {
+func (h *TUNIPAnswerer) Close() error {
 	return h.Conn.Close()
 }
 
-func (h *TUNIPHandshaker) RemoteAddr() net.Addr {
+func (h *TUNIPAnswerer) LocalAddr() net.Addr {
+	return h.Conn.LocalAddr()
+}
+
+func (h *TUNIPAnswerer) RemoteAddr() net.Addr {
 	return h.Conn.RemoteAddr()
 }
 
-func (h *TUNIPHandshaker) Handshake() (conn net.Conn, raddr net.Addr, err error) {
+func (h *TUNIPAnswerer) Answer() (conn net.Conn, raddr net.Addr, err error) {
 	raddr = &TUNAddr{}
 	return h.Conn, raddr, nil
 }
@@ -389,39 +394,59 @@ type TUNIPDialer struct {
 	addr net.Addr
 }
 
-func (d *TUNIPDialer) ReadPacketsRoutine() error {
-	for {
-		buf := allocateBuffer()
-		n, err := buf.ReadFrom(d.tun)
+type Fatal struct {
+	error
+}
+
+func formatFatal(format string, a ...any) *Fatal {
+	return &Fatal{fmt.Errorf(format, a...)}
+}
+
+func (d *TUNIPDialer) readOnePacket() (err error) {
+	buf := allocateBuffer()
+	defer func() {
 		if err != nil {
 			releaseBuffer(buf)
-			return fmt.Errorf("could not read from TUN device: %w", err)
 		}
-		if n == 0 {
-			releaseBuffer(buf)
-			continue
+	}()
+
+	n, err := buf.ReadFrom(d.tun)
+	if err != nil {
+		return formatFatal("could not read from TUN: %w", err)
+	}
+	if n == 0 {
+		return fmt.Errorf("read 0 bytes")
+	}
+
+	ip := tcpip.IPPacket(buf.PacketBytes())
+	ip4 := ip.IPv4Packet()
+	if ip4 == nil {
+		return fmt.Errorf("read non-IPv4 packet")
+	}
+
+	dstip, _ := netip.AddrFromSlice(ip4.DstIP())
+
+	d.ipToChMutex.RLock()
+	ch, ok := d.ipToCh[dstip]
+	d.ipToChMutex.RUnlock()
+	if !ok {
+		return fmt.Errorf("unknown destination of packet: %s", dstip)
+	}
+
+	ch <- buf
+	return
+}
+
+func (d *TUNIPDialer) ReadPacketsRoutine() (err error) {
+	var fatal *Fatal
+	for {
+		err = d.readOnePacket()
+		if errors.As(err, &fatal) {
+			return fmt.Errorf("read tun fatal: %w", err)
 		}
-
-		ip := tcpip.IPPacket(buf.PacketBytes())
-		ip4 := ip.IPv4Packet()
-		if ip4 == nil {
-			releaseBuffer(buf)
-			glog.Warningf("received IPv6 packet from TUN device")
-			continue
+		if err != nil {
+			glog.Warningf("[read tun] %s", err)
 		}
-
-		dstip, _ := netip.AddrFromSlice(ip4.DstIP())
-
-		d.ipToChMutex.RLock()
-		ch, ok := d.ipToCh[dstip]
-		d.ipToChMutex.RUnlock()
-		if !ok {
-			releaseBuffer(buf)
-			glog.Warningf("Unknown destination of packet: %s", dstip)
-			continue
-		}
-
-		ch <- buf
 	}
 }
 

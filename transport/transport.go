@@ -20,14 +20,15 @@ type NetDialer interface {
 }
 
 type Listener interface {
-	Accept() (Handshaker, error)
+	Accept() (Answerer, error)
 	Addr() net.Addr
 	Close() error
 }
 
-type Handshaker interface {
+type Answerer interface {
 	Close() error
-	Handshake() (net.Conn, net.Addr, error)
+	Answer() (net.Conn, net.Addr, error)
+	LocalAddr() net.Addr
 	RemoteAddr() net.Addr
 }
 
@@ -74,18 +75,18 @@ func (rt *RoundTripper) RoundTrip(ctx context.Context) error {
 	return g.Wait()
 }
 
-func (rt *RoundTripper) handle(handshaker Handshaker) error {
-	inConn, raddr, err := handshaker.Handshake()
+func (rt *RoundTripper) handle(answerer Answerer) error {
+	inConn, raddr, err := answerer.Answer()
 	if err != nil {
-		return fmt.Errorf("could not handshake [from %s]: %w", handshaker.RemoteAddr(), err)
+		return fmt.Errorf("could not handshake [from %s]: %w", answerer.RemoteAddr(), err)
 	}
 
 	outConn, err := rt.Dialer.Dial(raddr)
 	if err != nil {
 		return fmt.Errorf("could not dial: %w", err)
 	}
-	glog.Infof("connected through proxy [%s <-> %s]", handshaker.RemoteAddr(), raddr)
-	defer glog.Infof("connection closed [%s <-> %s]", handshaker.RemoteAddr(), raddr)
+	glog.Infof("connected through proxy [%s <-> %s]", answerer.RemoteAddr(), raddr)
+	defer glog.Infof("connection closed [%s <-> %s]", answerer.RemoteAddr(), raddr)
 
 	errOnce := sync.Once{}
 	wg := sync.WaitGroup{}

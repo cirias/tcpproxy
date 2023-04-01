@@ -110,13 +110,13 @@ type TunnelListener struct {
 	fallbackAddr net.Addr
 }
 
-func (l *TunnelListener) Accept() (Handshaker, error) {
+func (l *TunnelListener) Accept() (Answerer, error) {
 	conn, err := l.listener.Accept()
 	if err != nil {
 		return nil, fmt.Errorf("could not accept tls connection: %w", err)
 	}
 
-	return &TunnelServerHandshaker{conn, l}, nil
+	return &TunnelServerAnswerer{conn, l}, nil
 }
 
 func (l *TunnelListener) Close() error {
@@ -129,12 +129,12 @@ func (l *TunnelListener) Addr() net.Addr {
 
 var DefaultHandshakeTimeout = 5 * time.Second
 
-type TunnelServerHandshaker struct {
+type TunnelServerAnswerer struct {
 	net.Conn
 	listener *TunnelListener
 }
 
-func (c *TunnelServerHandshaker) Handshake() (conn net.Conn, raddr net.Addr, err error) {
+func (c *TunnelServerAnswerer) Answer() (conn net.Conn, raddr net.Addr, err error) {
 	switch conn := c.Conn.(type) {
 	case *tls.Conn:
 		ctx, cancel := context.WithTimeout(context.Background(), DefaultHandshakeTimeout)

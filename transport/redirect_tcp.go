@@ -18,20 +18,20 @@ func ListenRedirectTCP(address string) (*RedirectTCPListener, error) {
 	return &RedirectTCPListener{listener}, nil
 }
 
-func (l *RedirectTCPListener) Accept() (Handshaker, error) {
+func (l *RedirectTCPListener) Accept() (Answerer, error) {
 	conn, err := l.Listener.Accept()
 	if err != nil {
 		return nil, fmt.Errorf("could not accept TCP connection: %w", err)
 	}
 
-	return &RedirectTCPHandshaker{conn}, nil
+	return &RedirectTCPAnswerer{conn}, nil
 }
 
-type RedirectTCPHandshaker struct {
+type RedirectTCPAnswerer struct {
 	net.Conn
 }
 
-func (c *RedirectTCPHandshaker) Handshake() (conn net.Conn, raddr net.Addr, err error) {
+func (c *RedirectTCPAnswerer) Answer() (conn net.Conn, raddr net.Addr, err error) {
 	defer func() {
 		if err != nil {
 			_ = c.Conn.Close()

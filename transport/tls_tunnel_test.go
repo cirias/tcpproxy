@@ -74,7 +74,7 @@ GuCElY3+yMK/
 		t.Fatal(err)
 	}
 
-	conn, raddr, err := h.Handshake()
+	conn, raddr, err := h.Answer()
 	if err != nil {
 		t.Fatal(err)
 	}

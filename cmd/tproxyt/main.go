@@ -162,8 +162,10 @@ func client(tun wgtun.Device) error {
 		}
 	}
 
-	var wg errgroup.Group
-	wg.Go(func() error { return transport.TUNReadPacketsRoutine(tun, tcpListener, ipListener) })
+	wg, ctx := errgroup.WithContext(context.Background())
+	wg.Go(func() error {
+		return transport.TUNReadPacketsRoutine(ctx, tun, tcpListener, ipListener)
+	})
 	wg.Go(func() error {
 		dialer, err := transport.NewTLSTunnelDialerWithCertFile(*secret, "", *raddr, *sname, *cacert)
 		// dialer, err := transport.NewTCPDialer(*secret, "", *raddr)
@@ -174,7 +176,7 @@ func client(tun wgtun.Device) error {
 		listeners := []transport.Listener{ipListener, tcpListener}
 		rt := &transport.RoundTripper{Listeners: listeners, Dialer: dialer}
 
-		return rt.RoundTrip(context.Background())
+		return rt.RoundTrip(ctx)
 	})
 	return wg.Wait()
 }
@@ -188,14 +190,9 @@ func server(tun wgtun.Device) error {
 
 	ipDialer := transport.NewTUNIPDialer(tun)
 
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
-
-	var wg errgroup.Group
+	wg, ctx := errgroup.WithContext(context.Background())
 	wg.Go(func() error {
-		// cancel RoundTrip when tun is gone
-		defer cancel()
-		return ipDialer.ReadPacketsRoutine()
+		return ipDialer.ReadPacketsRoutine(ctx)
 	})
 	wg.Go(func() error {
 		dialer := &transport.TUNTCPDialer{

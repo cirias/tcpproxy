@@ -2,6 +2,7 @@ package transport
 
 import (
 	"bytes"
+	"context"
 	"encoding/binary"
 	"fmt"
 	"io"
@@ -18,7 +19,13 @@ import (
 	"github.com/cirias/tcpproxy/tcpip"
 )
 
-func TUNReadPacketsRoutine(tun tun.Device, tcpl *TUNTCPListener, ipl *TUNIPListener) error {
+func TUNReadPacketsRoutine(ctx context.Context, tun tun.Device, tcpl *TUNTCPListener, ipl *TUNIPListener) error {
+	go func() {
+		<-ctx.Done()
+		// unblock this read routine when things are dying
+		tun.Close()
+	}()
+
 	defer func() {
 		if tcpl != nil {
 			close(tcpl.pktCh)
@@ -261,16 +268,18 @@ func (h *TUNTCPHandshaker) Handshake() (conn net.Conn, raddr net.Addr, err error
 
 func NewTUNIPListener(tun tun.Device) *TUNIPListener {
 	return &TUNIPListener{
-		tun:   tun,
-		pktCh: make(chan *PacketBuf, 0),
-		mutex: &sync.Mutex{},
+		tun:    tun,
+		pktCh:  make(chan *PacketBuf, 0),
+		mutex:  &sync.Mutex{},
+		closed: make(chan struct{}),
 	}
 }
 
 type TUNIPListener struct {
-	tun   tun.Device
-	pktCh chan *PacketBuf
-	mutex *sync.Mutex
+	tun    tun.Device
+	pktCh  chan *PacketBuf
+	mutex  *sync.Mutex
+	closed chan struct{}
 }
 
 func (l *TUNIPListener) Addr() net.Addr {
@@ -285,9 +294,17 @@ func (l *TUNIPListener) Accept() (Handshaker, error) {
 
 	l.mutex.Lock()
 
-	buf, ok := <-l.pktCh
-	if !ok {
+	var buf *PacketBuf
+	var ok bool
+	select {
+	case <-l.closed:
+		glog.Infof("TUNIPListener is closed")
 		return nil, io.EOF
+	case buf, ok = <-l.pktCh:
+		if !ok {
+			glog.Infof("TUNIPListener input packet channel is closed")
+			return nil, io.EOF
+		}
 	}
 
 	once := new(sync.Once)
@@ -315,7 +332,7 @@ func (l *TUNIPListener) Accept() (Handshaker, error) {
 }
 
 func (l *TUNIPListener) Close() error {
-	l.mutex.Lock()
+	close(l.closed)
 	return nil
 }
 
@@ -389,7 +406,13 @@ type TUNIPDialer struct {
 	addr net.Addr
 }
 
-func (d *TUNIPDialer) ReadPacketsRoutine() error {
+func (d *TUNIPDialer) ReadPacketsRoutine(ctx context.Context) error {
+	go func() {
+		<-ctx.Done()
+		// unblock this read routine when things are dying
+		d.tun.Close()
+	}()
+
 	for {
 		buf := allocateBuffer()
 		n, err := buf.ReadFrom(d.tun)

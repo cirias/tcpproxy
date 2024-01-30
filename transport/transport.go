@@ -42,16 +42,12 @@ type RoundTripper struct {
 
 func (rt *RoundTripper) RoundTrip(ctx context.Context) error {
 	g, ctx := errgroup.WithContext(ctx)
-	ctx, cancel := context.WithCancel(ctx)
-	defer cancel()
 
 	for _, listener := range rt.Listeners {
 		l := listener
 		g.Go(func() error {
-			// cancel all other listeners
-			defer cancel()
-
 			go func() {
+				// ctx will be canceled on the first not nil error returned from the Go func
 				<-ctx.Done()
 				l.Close()
 			}()
@@ -75,6 +71,7 @@ func (rt *RoundTripper) RoundTrip(ctx context.Context) error {
 }
 
 func (rt *RoundTripper) handle(handshaker Handshaker) error {
+	glog.Infof("handle handshaker [from %s]", handshaker.RemoteAddr())
 	inConn, raddr, err := handshaker.Handshake()
 	if err != nil {
 		return fmt.Errorf("could not handshake [from %s]: %w", handshaker.RemoteAddr(), err)

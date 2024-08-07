@@ -1,0 +1,50 @@
+name: tproxy
+
+services:
+  server:
+    platform: "linux/amd64"
+    build:
+      context: ../..
+      dockerfile: ./docker/server/Dockerfile
+    restart: always
+    cap_add:
+      - NET_ADMIN
+    devices:
+      - /dev/net/tun
+    ports:
+      - 443:443
+    volumes:
+      - letsencrypt:/etc/letsencrypt:ro
+    environment:
+      - TPROXY_SECRET
+    command: [
+        "tproxyt",
+        "-v", "1",
+        "-logtostderr",
+        "-cert", "/etc/letsencrypt/live/${TPROXY_DOMAIN}/fullchain.pem",
+        "-key", "/etc/letsencrypt/live/${TPROXY_DOMAIN}/privkey.pem",
+        "-secret", "$TPROXY_SECRET",
+        "-laddr", "0.0.0.0:443",
+        "-faddr", "nginx:80",
+        "-foreground",
+        "-mode", "server",
+      ]
+
+  nginx:
+    build:
+      context: ./nginx
+    restart: always
+
+  certbot:
+    build:
+      context: ./certbot
+    restart: always
+    ports:
+      - 80:80
+    volumes:
+      - letsencrypt:/etc/letsencrypt
+      - log:/var/log
+
+volumes:
+  letsencrypt:
+  log:

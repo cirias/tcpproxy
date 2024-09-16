@@ -43,6 +43,7 @@ var laddr = flag.String("laddr", "0.0.0.0:443", "local listening address")
 var faddr = flag.String("faddr", "", "fallback http server address (optional)")
 var cert = flag.String("cert", "", "path of the cert file")
 var key = flag.String("key", "", "path of the cert key file")
+var ipv6hosts = flag.String("ipv6hosts", "", "path of the ipv6 hosts list file")
 
 func main() {
 	flag.Parse()
@@ -173,7 +174,9 @@ func client(tun wgtun.Device) error {
 			return err
 		}
 
-		listeners := []transport.Listener{ipListener, tcpListener}
+		tlsSniListener := &transport.TLSSNIListener{Listener: tcpListener}
+
+		listeners := []transport.Listener{ipListener, tlsSniListener}
 		rt := &transport.RoundTripper{Listeners: listeners, Dialer: dialer}
 
 		return rt.RoundTrip(ctx)
@@ -188,6 +191,15 @@ func server(tun wgtun.Device) error {
 		return err
 	}
 
+	var tcpDialer transport.Dialer = &transport.TCPDialer{}
+	if ipv6hosts != nil && *ipv6hosts != "" {
+		ipv6TCPDialer, err := transport.NewIPv6TCPDialer(*ipv6hosts)
+		if err != nil {
+			return err
+		}
+		tcpDialer = ipv6TCPDialer
+	}
+
 	ipDialer := transport.NewTUNIPDialer(tun)
 
 	wg, ctx := errgroup.WithContext(context.Background())
@@ -196,7 +208,7 @@ func server(tun wgtun.Device) error {
 	})
 	wg.Go(func() error {
 		dialer := &transport.TUNTCPDialer{
-			TCP: &transport.TCPDialer{},
+			TCP: tcpDialer,
 			IP:  ipDialer,
 		}
 

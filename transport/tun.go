@@ -255,12 +255,12 @@ type TUNTCPHandshaker struct {
 }
 
 func (h *TUNTCPHandshaker) Handshake() (conn net.Conn, raddr net.Addr, err error) {
-	saddr := h.Conn.RemoteAddr().(*net.TCPAddr)
+	clientAddr := h.Conn.RemoteAddr().(*net.TCPAddr)
 
-	addr := net.TCPAddrFromAddrPort(h.listener.tcpDaddr(saddr.Port))
+	addr := net.TCPAddrFromAddrPort(h.listener.tcpDaddr(clientAddr.Port))
 	if addr == nil {
 		h.Conn.Close()
-		return nil, nil, fmt.Errorf("no original address found for port %d", saddr.Port)
+		return nil, nil, fmt.Errorf("no original address found for port %d", clientAddr.Port)
 	}
 
 	return h.Conn, addr, nil

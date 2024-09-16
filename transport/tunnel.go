@@ -7,6 +7,7 @@ import (
 	"crypto/tls"
 	"fmt"
 	"io"
+	"log"
 	"net"
 	"strings"
 	"sync"
@@ -73,11 +74,14 @@ func (pkt *TunnelInitialPacket) Decode(r io.Reader) (err error) {
 		address := string(line[i+1:])
 		switch network {
 		case "tcp", "tcp4", "tcp6":
-			addr, err := net.ResolveTCPAddr(network, address)
-			if err != nil {
-				return fmt.Errorf("could not resolve TCP address (%s, %s): %w", network, address, err)
-			}
-			pkt.DstAddr = addr
+			pkt.DstAddr = &SimpleAddr{network, address}
+			/*
+			 * addr, err := net.ResolveTCPAddr(network, address)
+			 * if err != nil {
+			 *   return fmt.Errorf("could not resolve TCP address (%s, %s): %w", network, address, err)
+			 * }
+			 * pkt.DstAddr = addr
+			 */
 		case "tun_if":
 			pkt.DstAddr = &TUNAddr{}
 		default:
@@ -88,11 +92,25 @@ func (pkt *TunnelInitialPacket) Decode(r io.Reader) (err error) {
 	return nil
 }
 
+type SimpleAddr struct {
+	network string
+	address string
+}
+
+func (a *SimpleAddr) Network() string {
+	return a.network
+}
+
+func (a *SimpleAddr) String() string {
+	return a.address
+}
+
 func (pkt *TunnelInitialPacket) Encode(w io.Writer) error {
 	if _, err := w.Write([]byte(pkt.Secret + "\r\n")); err != nil {
 		return fmt.Errorf("could not write secret hash: %w", err)
 	}
 
+	log.Printf("Encode tunnel initial packet: %s %s", pkt.DstAddr.Network(), pkt.DstAddr.String())
 	if _, err := w.Write([]byte(pkt.DstAddr.Network() + ":" + pkt.DstAddr.String() + "\r\n")); err != nil {
 		return fmt.Errorf("could not write destination address: %w", err)
 	}

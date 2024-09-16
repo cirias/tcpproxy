@@ -15,6 +15,7 @@ services:
       - 443:443
     volumes:
       - letsencrypt:/etc/letsencrypt:ro
+      - /root/tproxy_tun/ipv6hosts:/config/ipv6hosts:ro
     environment:
       - TPROXY_SECRET
     command: [
@@ -28,6 +29,7 @@ services:
         "-faddr", "nginx:80",
         "-foreground",
         "-mode", "server",
+        "-ipv6hosts", "/config/ipv6hosts",
       ]
 
   nginx:
@@ -48,3 +50,7 @@ services:
 volumes:
   letsencrypt:
   log:
+
+networks:
+  default:
+    enable_ipv6: true

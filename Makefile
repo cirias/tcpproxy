@@ -1,7 +1,7 @@
 .PHONY: build docker_image docker_run server client gdb_client
 
 build:
-	CGO_ENABLED=0 GOOS=linux go build ./cmd/tproxyt
+	CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build ./cmd/tproxyt
 	GOOS=linux GOARCH=arm GOARM=7 go build -o tproxyt_armv7 ./cmd/tproxyt
 
 transport.test: ./transport/*.go

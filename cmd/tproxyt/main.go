@@ -37,6 +37,7 @@ var raddr = flag.String("raddr", "", "remote connecting address")
 var sname = flag.String("sname", "", "TLS server name")
 var tunmockip = flag.String("tunmockip", "", "TUN device mock IP for TCP")
 var tunproxyport = flag.Int("tunproxyport", 0, "TUN device proxy port that TCP server bind to")
+var snihosts = flag.String("snihosts", "", "path of the sni hosts list file")
 
 // server
 var laddr = flag.String("laddr", "0.0.0.0:443", "local listening address")
@@ -154,18 +155,27 @@ func createTUN() (wgtun.Device, error) {
 func client(tun wgtun.Device) error {
 	ipListener := transport.NewTUNIPListener(tun)
 
-	var tcpListener *transport.TUNTCPListener
+	var tunTCPListener *transport.TUNTCPListener
 	if *tunproxyport != 0 {
 		var err error
-		tcpListener, err = transport.NewTUNTCPListener(tun, *tunip, *tunmockip, *tunproxyport)
+		tunTCPListener, err = transport.NewTUNTCPListener(tun, *tunip, *tunmockip, *tunproxyport)
 		if err != nil {
 			return err
 		}
 	}
 
+	var tcpListener transport.Listener = tunTCPListener
+	if snihosts != nil && *snihosts != "" {
+		listener, err := transport.NewTLSSNIListener(tunTCPListener, *snihosts)
+		if err != nil {
+			return err
+		}
+		tcpListener = listener
+	}
+
 	wg, ctx := errgroup.WithContext(context.Background())
 	wg.Go(func() error {
-		return transport.TUNReadPacketsRoutine(ctx, tun, tcpListener, ipListener)
+		return transport.TUNReadPacketsRoutine(ctx, tun, tunTCPListener, ipListener)
 	})
 	wg.Go(func() error {
 		dialer, err := transport.NewTLSTunnelDialerWithCertFile(*secret, "", *raddr, *sname, *cacert)
@@ -174,9 +184,7 @@ func client(tun wgtun.Device) error {
 			return err
 		}
 
-		tlsSniListener := &transport.TLSSNIListener{Listener: tcpListener}
-
-		listeners := []transport.Listener{ipListener, tlsSniListener}
+		listeners := []transport.Listener{ipListener, tcpListener}
 		rt := &transport.RoundTripper{Listeners: listeners, Dialer: dialer}
 
 		return rt.RoundTrip(ctx)

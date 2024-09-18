@@ -12,6 +12,16 @@ import (
 
 type TLSSNIListener struct {
 	Listener
+	sniHosts *HostMatcher
+}
+
+func NewTLSSNIListener(listener Listener, sniHostsFilepath string) (*TLSSNIListener, error) {
+	sniHosts, err := NewHostMatcherFromFile(sniHostsFilepath)
+	if err != nil {
+		return nil, fmt.Errorf("could not create hosts matcher from file: %w", err)
+	}
+
+	return &TLSSNIListener{Listener: listener, sniHosts: sniHosts}, nil
 }
 
 func (l *TLSSNIListener) Accept() (Handshaker, error) {
@@ -20,11 +30,12 @@ func (l *TLSSNIListener) Accept() (Handshaker, error) {
 		return nil, err
 	}
 
-	return &TLSSNIHandshaker{Handshaker: hs}, nil
+	return &TLSSNIHandshaker{Handshaker: hs, sniHosts: l.sniHosts}, nil
 }
 
 type TLSSNIHandshaker struct {
 	Handshaker
+	sniHosts *HostMatcher
 }
 
 func (hs *TLSSNIHandshaker) Handshake() (net.Conn, net.Addr, error) {
@@ -63,12 +74,16 @@ func (hs *TLSSNIHandshaker) Handshake() (net.Conn, net.Addr, error) {
 
 	log.Printf("TLS server name: %s", serverName)
 
+	if !hs.sniHosts.Matches(serverName) {
+		return replayConn, raddr, nil
+	}
+
 	tcpAddr, err := net.ResolveTCPAddr(raddr.Network(), raddr.String())
 	if err != nil {
 		return nil, nil, fmt.Errorf("could not resolve TCP address: %w", err)
 	}
 
-	return replayConn, &HostAddr{network: "tcp6", hostname: serverName, port: tcpAddr.Port}, nil
+	return replayConn, &HostAddr{network: "tcp", hostname: serverName, port: tcpAddr.Port}, nil
 }
 
 type TLSSNIClientHelloInfoConn struct {

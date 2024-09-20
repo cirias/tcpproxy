@@ -6,6 +6,7 @@ import (
 	"encoding/binary"
 	"fmt"
 	"io"
+	"log"
 	"net"
 	"net/netip"
 	"sync"
@@ -14,6 +15,7 @@ import (
 
 	"github.com/golang/glog"
 
+	"golang.org/x/net/dns/dnsmessage"
 	"golang.zx2c4.com/wireguard/tun"
 
 	"github.com/cirias/tcpproxy/tcpip"
@@ -42,14 +44,16 @@ func TUNReadPacketsRoutine(ctx context.Context, tun tun.Device, tcpl *TUNTCPList
 		}
 
 		ip := tcpip.IPPacket(buf.PacketBytes())
-		ip4 := ip.IPv4Packet()
-		if ip4 == nil {
+		ipv4 := ip.IPv4Packet()
+		if ipv4 == nil {
 			releaseBuffer(buf)
 			continue
 		}
 
+		dumpDNSMessage(ipv4)
+
 		if tcpl != nil {
-			if ip4.Protocol() == tcpip.ProtocolTCP {
+			if ipv4.Protocol() == tcpip.ProtocolTCP {
 				tcpl.pktCh <- buf
 				continue
 			}
@@ -567,19 +571,27 @@ func (c *TUNIPConn) Read(p []byte) (int, error) {
 }
 
 func (c *TUNIPConn) Write(b []byte) (int, error) {
+	headerLength := 4
 	c.wbuf.Write(b)
 	for {
-		if c.wbuf.Len() < 4 {
+		if c.wbuf.Len() < headerLength {
 			return len(b), nil
 		}
 
 		n := int(binary.BigEndian.Uint16(c.wbuf.Bytes()[:2]))
 		// FIXME how could n be zero?
-		if c.wbuf.Len() < 4+n {
+		if c.wbuf.Len() < headerLength+n {
 			return len(b), nil
 		}
 
-		if _, err := c.w.Write(c.wbuf.Next(4+n), 4); err != nil {
+		ipPacketBytes := c.wbuf.Next(headerLength + n)
+
+		ip := tcpip.IPPacket(ipPacketBytes[headerLength:])
+		if ip.Version() == 4 {
+			dumpDNSMessage(ip.IPv4Packet())
+		}
+
+		if _, err := c.w.Write(ipPacketBytes, headerLength); err != nil {
 			return len(b), err
 		}
 	}
@@ -631,4 +643,37 @@ type OffsetReader interface {
 
 type OffsetWriter interface {
 	Write([]byte, int) (int, error)
+}
+
+func dumpDNSMessage(ipv4 tcpip.IPv4Packet) {
+	if ipv4.Protocol() != tcpip.ProtocolUDP {
+		return
+	}
+
+	udp := ipv4.TransportPacket().(tcpip.UDPPacket)
+	var parser dnsmessage.Parser
+	if _, err := parser.Start(udp.Payload()); err != nil {
+		log.Printf("could not parse dns message: %w", err)
+		return
+	}
+
+	log.Printf("DNS Packet: %s:%d -> %s:%d", ipv4.SrcIP(), udp.SrcPort(), ipv4.DstIP(), udp.DstPort())
+
+	questions, err := parser.AllQuestions()
+	if err != nil {
+		log.Printf("could not parse dns questions: %w", err)
+	} else {
+		for _, question := range questions {
+			log.Println(question.GoString())
+		}
+	}
+
+	answers, err := parser.AllAnswers()
+	if err != nil {
+		log.Printf("could not parse dns answers: %w", err)
+	} else {
+		for _, answer := range answers {
+			log.Println(answer.GoString())
+		}
+	}
 }

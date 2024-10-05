@@ -154,6 +154,9 @@ func (p UDPPacket) DstPort() uint16 {
 }
 
 func (p UDPPacket) Payload() []byte {
+	if len(p) < UDPHeaderLen {
+		return nil
+	}
 	return p[UDPHeaderLen:]
 }
 

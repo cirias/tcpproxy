@@ -16,6 +16,9 @@ import (
 	"github.com/cirias/tcpproxy/transport"
 )
 
+import _ "net/http/pprof"
+import "net/http"
+
 const ExitSetupFailed = 1
 
 const (
@@ -48,6 +51,9 @@ var ipv6hosts = flag.String("ipv6hosts", "", "path of the ipv6 hosts list file")
 
 func main() {
 	flag.Parse()
+	go func() {
+		glog.Fatalf("failed to serve pprof: %s", http.ListenAndServe("localhost:6060", nil))
+	}()
 
 	var run func(wgtun.Device) error
 	switch *mode {

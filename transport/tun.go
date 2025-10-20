@@ -653,7 +653,7 @@ func dumpDNSMessage(ipv4 tcpip.IPv4Packet) {
 	udp := ipv4.TransportPacket().(tcpip.UDPPacket)
 	var parser dnsmessage.Parser
 	if _, err := parser.Start(udp.Payload()); err != nil {
-		log.Printf("could not parse dns message: %w", err)
+		log.Printf("could not parse dns message: %s", err)
 		return
 	}
 
@@ -661,7 +661,7 @@ func dumpDNSMessage(ipv4 tcpip.IPv4Packet) {
 
 	questions, err := parser.AllQuestions()
 	if err != nil {
-		log.Printf("could not parse dns questions: %w", err)
+		log.Printf("could not parse dns questions: %s", err)
 	} else {
 		for _, question := range questions {
 			log.Println(question.GoString())
@@ -670,7 +670,7 @@ func dumpDNSMessage(ipv4 tcpip.IPv4Packet) {
 
 	answers, err := parser.AllAnswers()
 	if err != nil {
-		log.Printf("could not parse dns answers: %w", err)
+		log.Printf("could not parse dns answers: %s", err)
 	} else {
 		for _, answer := range answers {
 			log.Println(answer.GoString())

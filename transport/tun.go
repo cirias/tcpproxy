@@ -6,7 +6,6 @@ import (
 	"encoding/binary"
 	"fmt"
 	"io"
-	"log"
 	"net"
 	"net/netip"
 	"sync"
@@ -653,27 +652,27 @@ func dumpDNSMessage(ipv4 tcpip.IPv4Packet) {
 	udp := ipv4.TransportPacket().(tcpip.UDPPacket)
 	var parser dnsmessage.Parser
 	if _, err := parser.Start(udp.Payload()); err != nil {
-		log.Printf("could not parse dns message: %s", err)
+		glog.V(2).Infof("could not parse dns message: %s", err)
 		return
 	}
 
-	log.Printf("DNS Packet: %s:%d -> %s:%d", ipv4.SrcIP(), udp.SrcPort(), ipv4.DstIP(), udp.DstPort())
+	glog.V(2).Infof("DNS Packet: %s:%d -> %s:%d", ipv4.SrcIP(), udp.SrcPort(), ipv4.DstIP(), udp.DstPort())
 
 	questions, err := parser.AllQuestions()
 	if err != nil {
-		log.Printf("could not parse dns questions: %s", err)
+		glog.V(2).Infof("could not parse dns questions: %s", err)
 	} else {
 		for _, question := range questions {
-			log.Println(question.GoString())
+			glog.V(2).Infof(question.GoString())
 		}
 	}
 
 	answers, err := parser.AllAnswers()
 	if err != nil {
-		log.Printf("could not parse dns answers: %s", err)
+		glog.V(2).Infof("could not parse dns answers: %s", err)
 	} else {
 		for _, answer := range answers {
-			log.Println(answer.GoString())
+			glog.V(2).Infof(answer.GoString())
 		}
 	}
 }

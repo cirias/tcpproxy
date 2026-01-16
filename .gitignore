@@ -6,3 +6,5 @@ tproxyt_armv7
 !cmd/*
 
 transport.test
+
+ai/

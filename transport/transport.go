@@ -81,8 +81,14 @@ func (rt *RoundTripper) handle(handshaker Handshaker) error {
 	if err != nil {
 		return fmt.Errorf("could not dial: %w", err)
 	}
+
+	start := time.Now()
 	glog.Infof("connected through proxy [%s <-> %s]", handshaker.RemoteAddr(), raddr)
-	defer glog.Infof("connection closed [%s <-> %s]", handshaker.RemoteAddr(), raddr)
+
+	var tx, rx int64
+	defer func() {
+		glog.Infof("connection closed [%s <-> %s] duration=%s tx=%d rx=%d", handshaker.RemoteAddr(), raddr, time.Since(start), tx, rx)
+	}()
 
 	errOnce := sync.Once{}
 	wg := sync.WaitGroup{}
@@ -91,7 +97,8 @@ func (rt *RoundTripper) handle(handshaker Handshaker) error {
 		defer wg.Done()
 		defer inConn.Close()
 		defer outConn.Close()
-		e := copyConn("->", inConn, outConn)
+		n, e := copyConn("->", inConn, outConn)
+		tx = n
 		errOnce.Do(func() {
 			err = e
 		})
@@ -101,7 +108,8 @@ func (rt *RoundTripper) handle(handshaker Handshaker) error {
 		defer wg.Done()
 		defer inConn.Close()
 		defer outConn.Close()
-		e := copyConn("<-", outConn, inConn)
+		n, e := copyConn("<-", outConn, inConn)
+		rx = n
 		errOnce.Do(func() {
 			err = e
 		})
@@ -112,35 +120,37 @@ func (rt *RoundTripper) handle(handshaker Handshaker) error {
 	return err
 }
 
-func copyConn(prefix string, i, o net.Conn) error {
+func copyConn(prefix string, i, o net.Conn) (int64, error) {
+	var total int64
 	b := make([]byte, 8*1024)
 	for {
 		if err := i.SetDeadline(time.Now().Add(time.Minute)); err != nil {
-			return fmt.Errorf("%s could not set deadline when read from %s: %w", prefix, i.RemoteAddr(), err)
+			return total, fmt.Errorf("%s could not set deadline when read from %s: %w", prefix, i.RemoteAddr(), err)
 		}
 		if glog.V(3) {
 			glog.Infof("%s reading from %s", prefix, i.RemoteAddr())
 		}
 		n, err := i.Read(b)
 		if err != nil {
-			return fmt.Errorf("%s could not read from %s: %w", prefix, i.RemoteAddr(), err)
+			return total, fmt.Errorf("%s could not read from %s: %w", prefix, i.RemoteAddr(), err)
 		}
 		if glog.V(3) {
 			glog.Infof("%s read bytes from %s: %d", prefix, i.RemoteAddr(), n)
 		}
 
 		if err := o.SetDeadline(time.Now().Add(time.Minute)); err != nil {
-			return fmt.Errorf("%s could not set deadline when write to %s: %w", prefix, o.RemoteAddr(), err)
+			return total, fmt.Errorf("%s could not set deadline when write to %s: %w", prefix, o.RemoteAddr(), err)
 		}
 		if glog.V(3) {
 			glog.Infof("%s writing to %s", prefix, o.RemoteAddr())
 		}
 		m, err := o.Write(b[:n])
 		if err != nil {
-			return fmt.Errorf("%s could not write to %s: %w", prefix, o.RemoteAddr(), err)
+			return total, fmt.Errorf("%s could not write to %s: %w", prefix, o.RemoteAddr(), err)
 		}
 		if glog.V(3) {
 			glog.Infof("%s written bytes to %s: %d", prefix, o.RemoteAddr(), m)
 		}
+		total += int64(m)
 	}
 }

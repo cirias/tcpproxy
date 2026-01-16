@@ -14,10 +14,10 @@ import (
 	wgtun "golang.zx2c4.com/wireguard/tun"
 
 	"github.com/cirias/tcpproxy/transport"
-)
 
-import _ "net/http/pprof"
-import "net/http"
+	"net/http"
+	_ "net/http/pprof"
+)
 
 const ExitSetupFailed = 1
 
@@ -51,6 +51,11 @@ var ipv6hosts = flag.String("ipv6hosts", "", "path of the ipv6 hosts list file")
 
 func main() {
 	flag.Parse()
+
+	glog.Infof("Starting tproxyt with args: %v", os.Args)
+	glog.Infof("Config: mode=%s, tun=%s, tunip=%s, laddr=%s, raddr=%s, foreground=%v",
+		*mode, *tname, *tunip, *laddr, *raddr, *foreground)
+
 	go func() {
 		glog.Fatalf("failed to serve pprof: %s", http.ListenAndServe("localhost:6060", nil))
 	}()

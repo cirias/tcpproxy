@@ -14,6 +14,12 @@ import (
 	"github.com/golang/glog"
 )
 
+var copyBufPool = sync.Pool{
+	New: func() interface{} {
+		return make([]byte, 8*1024)
+	},
+}
+
 type NetDialer interface {
 	Dial(network, addr string) (net.Conn, error)
 	DialContext(ctx context.Context, network, addr string) (net.Conn, error)
@@ -38,6 +44,7 @@ type Dialer interface {
 type RoundTripper struct {
 	Listeners []Listener
 	Dialer    Dialer
+	Timeout   time.Duration
 }
 
 func (rt *RoundTripper) RoundTrip(ctx context.Context) error {
@@ -97,7 +104,7 @@ func (rt *RoundTripper) handle(handshaker Handshaker) error {
 		defer wg.Done()
 		defer inConn.Close()
 		defer outConn.Close()
-		n, e := copyConn("->", inConn, outConn)
+		n, e := copyConn("->", inConn, outConn, rt.Timeout)
 		tx = n
 		errOnce.Do(func() {
 			err = e
@@ -108,7 +115,7 @@ func (rt *RoundTripper) handle(handshaker Handshaker) error {
 		defer wg.Done()
 		defer inConn.Close()
 		defer outConn.Close()
-		n, e := copyConn("<-", outConn, inConn)
+		n, e := copyConn("<-", outConn, inConn, rt.Timeout)
 		rx = n
 		errOnce.Do(func() {
 			err = e
@@ -120,11 +127,16 @@ func (rt *RoundTripper) handle(handshaker Handshaker) error {
 	return err
 }
 
-func copyConn(prefix string, i, o net.Conn) (int64, error) {
+func copyConn(prefix string, i, o net.Conn, timeout time.Duration) (int64, error) {
+	if timeout == 0 {
+		timeout = time.Hour
+	}
 	var total int64
-	b := make([]byte, 8*1024)
+	b := copyBufPool.Get().([]byte)
+	defer copyBufPool.Put(b)
+
 	for {
-		if err := i.SetDeadline(time.Now().Add(time.Minute)); err != nil {
+		if err := i.SetDeadline(time.Now().Add(timeout)); err != nil {
 			return total, fmt.Errorf("%s could not set deadline when read from %s: %w", prefix, i.RemoteAddr(), err)
 		}
 		if glog.V(3) {
@@ -138,7 +150,7 @@ func copyConn(prefix string, i, o net.Conn) (int64, error) {
 			glog.Infof("%s read bytes from %s: %d", prefix, i.RemoteAddr(), n)
 		}
 
-		if err := o.SetDeadline(time.Now().Add(time.Minute)); err != nil {
+		if err := o.SetDeadline(time.Now().Add(timeout)); err != nil {
 			return total, fmt.Errorf("%s could not set deadline when write to %s: %w", prefix, o.RemoteAddr(), err)
 		}
 		if glog.V(3) {

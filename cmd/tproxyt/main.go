@@ -34,6 +34,7 @@ var secret = flag.String("secret", "", "secret shared with client")
 var cacert = flag.String("cacert", "", "path of the CA cert file for verify client/server cert (optional)")
 var tname = flag.String("tun", "", "TUN device name")
 var tunip = flag.String("tunip", "", "TUN device IP address in CIDR")
+var timeout = flag.Duration("timeout", 0, "connection timeout (default 1h)")
 
 // client
 var raddr = flag.String("raddr", "", "remote connecting address")
@@ -196,7 +197,7 @@ func client(tun wgtun.Device) error {
 		}
 
 		listeners := []transport.Listener{ipListener, tcpListener}
-		rt := &transport.RoundTripper{Listeners: listeners, Dialer: dialer}
+		rt := &transport.RoundTripper{Listeners: listeners, Dialer: dialer, Timeout: *timeout}
 
 		return rt.RoundTrip(ctx)
 	})
@@ -231,7 +232,7 @@ func server(tun wgtun.Device) error {
 			IP:  ipDialer,
 		}
 
-		rt := &transport.RoundTripper{Listeners: []transport.Listener{listener}, Dialer: dialer}
+		rt := &transport.RoundTripper{Listeners: []transport.Listener{listener}, Dialer: dialer, Timeout: *timeout}
 
 		return rt.RoundTrip(ctx)
 	})

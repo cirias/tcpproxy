@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"net"
 	"os"
+	"sync"
 	"syscall"
 	"time"
 
@@ -17,6 +18,7 @@ const tcpproxyBypassMark int = 0x00100
 var NextProtos = []string{"h2", "http/1.1"}
 
 type CertReloader struct {
+	mu                sync.RWMutex
 	certFile          string
 	keyFile           string
 	cachedCert        *tls.Certificate
@@ -28,6 +30,17 @@ func (cr *CertReloader) GetCertificate(h *tls.ClientHelloInfo) (*tls.Certificate
 	if err != nil {
 		return nil, fmt.Errorf("failed checking key file modification time: %w", err)
 	}
+
+	cr.mu.RLock()
+	if cr.cachedCert != nil && !stat.ModTime().After(cr.cachedCertModTime) {
+		cert := cr.cachedCert
+		cr.mu.RUnlock()
+		return cert, nil
+	}
+	cr.mu.RUnlock()
+
+	cr.mu.Lock()
+	defer cr.mu.Unlock()
 
 	if cr.cachedCert == nil || stat.ModTime().After(cr.cachedCertModTime) {
 		pair, err := tls.LoadX509KeyPair(cr.certFile, cr.keyFile)

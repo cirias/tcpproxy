@@ -1,44 +1,124 @@
 package transport
 
 import (
+	"crypto/rand"
+	"crypto/rsa"
+	"crypto/x509"
+	"crypto/x509/pkix"
+	"encoding/pem"
 	"log"
+	"math/big"
 	"net"
+	"os"
+	"path/filepath"
+	"syscall"
 	"testing"
+	"time"
 )
 
-func TestTLSTunnel(t *testing.T) {
-	secret := "s0cr2t"
-	caCertPEMBlock := []byte(`
------BEGIN CERTIFICATE-----
-MIIDlTCCAn2gAwIBAgIUIVxAyAzPAkMUEMfGnFSBE5HqQ64wDQYJKoZIhvcNAQEL
-BQAwWTELMAkGA1UEBhMCVVMxCzAJBgNVBAgMAkNBMRIwEAYDVQQHDAlTb21ld2hl
-cmUxEDAOBgNVBAoMB1NvbWVvbmUxFzAVBgNVBAMMDmNhLmV4YW1wbGUuY29tMCAX
-DTIxMTIwNDEwMDgwOVoYDzIxMjExMTEwMTAwODA5WjBZMQswCQYDVQQGEwJVUzEL
-MAkGA1UECAwCQ0ExEjAQBgNVBAcMCVNvbWV3aGVyZTEQMA4GA1UECgwHU29tZW9u
-ZTEXMBUGA1UEAwwOY2EuZXhhbXBsZS5jb20wggEiMA0GCSqGSIb3DQEBAQUAA4IB
-DwAwggEKAoIBAQDUdvAj2Xjl0MfxjuRLA0/0bK0aqiBNwrNf9zEGbKKLSZZgd0Ms
-I+jzdeG3pZ65g/a3jwIU2TN2U7Lu3UzhZGl3JBGzblVxobFNWhIbzshQW+ASRPBl
-F54dj/pweGrHrRXCmMgW5spYOm3Zf3uhLUTcpUhRNOwLKygixcanyatniTLycwXE
-GpaNaN6eS3L9rO7xpktfGxhTf8vrBHI9Y3uECix0fU66zEsz22lMmpbriOM+EVhS
-aXdaqOsBfj3ibx8PyBxOgh13sp9Mp1YGvXjOQzBYBXiWoRe6SYyvHoY1BfTHEc7a
-n/oP377gjgcHEVSgIUFjGPC3W+87pTO7CPD3AgMBAAGjUzBRMB0GA1UdDgQWBBQB
-bJL0bAiCtErxBgufKn3PlWVEyTAfBgNVHSMEGDAWgBQBbJL0bAiCtErxBgufKn3P
-lWVEyTAPBgNVHRMBAf8EBTADAQH/MA0GCSqGSIb3DQEBCwUAA4IBAQBNiMzLPQb/
-tZ2NrL4hFBvomrqIryNrtoMddj/Uj2bC+j0svPte5WGCsp11n3SB/463gm31bClu
-noz18olLjfEDQPxKJVqXEcUzjoKYmW/6yGF2CwAjlwPSnWTWp/yj7/rOD+58fpOW
-T0Yqx9NfAIcDHMmqO2IGyl4qbqms/IgewcEf0W9fOPyt9QrLy8UGQnspE79vIBNh
-JaHRQVIC9TUoRMmCaVrxh5Bl3mf6a4v3UmumxgYFsDOAt4oHy/50hhq6yLfXnQvh
-nDQTCWb4eEHJML1mpEVnD7IqFwpofPgRttkmR0h03t3q+n7qj2+z7u8aa54nur9I
-GuCElY3+yMK/
------END CERTIFICATE-----
-  `)
+func canSetSocketMark() bool {
+	fd, err := syscall.Socket(syscall.AF_INET, syscall.SOCK_STREAM, syscall.IPPROTO_TCP)
+	if err != nil {
+		return false
+	}
+	defer func() {
+		_ = syscall.Close(fd)
+	}()
 
-	listener, err := ListenTLSTunnelWithCert(secret, "", "", "test/ssl/server_cert.pem", "test/ssl/server_key.pem", "")
+	if err := syscall.SetsockoptInt(fd, syscall.SOL_SOCKET, syscall.SO_MARK, tcpproxyBypassMark); err != nil {
+		return false
+	}
+	return true
+}
+
+func writeTestCerts(t *testing.T, serverName string) (string, string, []byte) {
+	t.Helper()
+
+	now := time.Now()
+	caKey, err := rsa.GenerateKey(rand.Reader, 2048)
+	if err != nil {
+		t.Fatalf("generate CA key: %v", err)
+	}
+
+	caTemplate := x509.Certificate{
+		SerialNumber:          big.NewInt(1),
+		Subject:               pkix.Name{CommonName: "tcpproxy-test-ca"},
+		NotBefore:             now.Add(-time.Minute),
+		NotAfter:              now.Add(24 * time.Hour),
+		KeyUsage:              x509.KeyUsageCertSign | x509.KeyUsageDigitalSignature,
+		BasicConstraintsValid: true,
+		IsCA:                  true,
+	}
+
+	caDER, err := x509.CreateCertificate(rand.Reader, &caTemplate, &caTemplate, &caKey.PublicKey, caKey)
+	if err != nil {
+		t.Fatalf("create CA cert: %v", err)
+	}
+	caPEM := pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: caDER})
+	if caPEM == nil {
+		t.Fatal("encode CA cert")
+	}
+
+	serverKey, err := rsa.GenerateKey(rand.Reader, 2048)
+	if err != nil {
+		t.Fatalf("generate server key: %v", err)
+	}
+	serverTemplate := x509.Certificate{
+		SerialNumber: big.NewInt(2),
+		Subject:      pkix.Name{CommonName: serverName},
+		DNSNames:     []string{serverName},
+		NotBefore:    now.Add(-time.Minute),
+		NotAfter:     now.Add(24 * time.Hour),
+		KeyUsage:     x509.KeyUsageDigitalSignature | x509.KeyUsageKeyEncipherment,
+		ExtKeyUsage:  []x509.ExtKeyUsage{x509.ExtKeyUsageServerAuth},
+	}
+
+	serverDER, err := x509.CreateCertificate(rand.Reader, &serverTemplate, &caTemplate, &serverKey.PublicKey, caKey)
+	if err != nil {
+		t.Fatalf("create server cert: %v", err)
+	}
+	serverCertPEM := pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: serverDER})
+	if serverCertPEM == nil {
+		t.Fatal("encode server cert")
+	}
+	serverKeyPEM := pem.EncodeToMemory(&pem.Block{Type: "RSA PRIVATE KEY", Bytes: x509.MarshalPKCS1PrivateKey(serverKey)})
+	if serverKeyPEM == nil {
+		t.Fatal("encode server key")
+	}
+
+	dir := t.TempDir()
+	certFile := filepath.Join(dir, "server_cert.pem")
+	keyFile := filepath.Join(dir, "server_key.pem")
+	if err := os.WriteFile(certFile, serverCertPEM, 0o600); err != nil {
+		t.Fatalf("write server cert: %v", err)
+	}
+	if err := os.WriteFile(keyFile, serverKeyPEM, 0o600); err != nil {
+		t.Fatalf("write server key: %v", err)
+	}
+
+	return certFile, keyFile, caPEM
+}
+
+func TestTLSTunnel(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping TLS tunnel test in short mode")
+	}
+	if os.Geteuid() != 0 {
+		t.Skip("skipping TLS tunnel test; requires root for SO_MARK")
+	}
+	if !canSetSocketMark() {
+		t.Skip("skipping TLS tunnel test; cannot set SO_MARK")
+	}
+	secret := "s0cr2t"
+	serverName := "s.example.com"
+	certFile, keyFile, caCertPEMBlock := writeTestCerts(t, serverName)
+
+	listener, err := ListenTLSTunnelWithCert(secret, "", "", certFile, keyFile, "")
 	if err != nil {
 		t.Fatal(err)
 	}
 
-	dialer, err := NewTLSTunnelDialerWithCert(secret, "", listener.Addr().String(), "s.example.com", caCertPEMBlock)
+	dialer, err := NewTLSTunnelDialerWithCert(secret, "", listener.Addr().String(), serverName, caCertPEMBlock)
 	if err != nil {
 		t.Fatal(err)
 	}

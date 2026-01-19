@@ -1,9 +1,11 @@
 package transport
 
 import (
+	"context"
 	"encoding/binary"
 	"fmt"
 	"net"
+	"os"
 	"os/exec"
 	"testing"
 	"time"
@@ -23,6 +25,12 @@ const (
 )
 
 func TestTun(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping tun integration test in short mode")
+	}
+	if os.Geteuid() != 0 {
+		t.Skip("skipping tun integration test; requires root")
+	}
 	tun, err := wgtun.CreateTUN("", 1420)
 	if err != nil {
 		t.Fatal(err)
@@ -53,7 +61,7 @@ func TestTun(t *testing.T) {
 	ipListener := NewTUNIPListener(tun)
 
 	go func() {
-		if err := TUNReadPacketsRoutine(tun, tcpListener, ipListener); err != nil {
+		if err := TUNReadPacketsRoutine(context.Background(), tun, tcpListener, ipListener); err != nil {
 			fmt.Println(err)
 		}
 	}()

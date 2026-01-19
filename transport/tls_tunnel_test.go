@@ -11,9 +11,25 @@ import (
 	"net"
 	"os"
 	"path/filepath"
+	"syscall"
 	"testing"
 	"time"
 )
+
+func canSetSocketMark() bool {
+	fd, err := syscall.Socket(syscall.AF_INET, syscall.SOCK_STREAM, syscall.IPPROTO_TCP)
+	if err != nil {
+		return false
+	}
+	defer func() {
+		_ = syscall.Close(fd)
+	}()
+
+	if err := syscall.SetsockoptInt(fd, syscall.SOL_SOCKET, syscall.SO_MARK, tcpproxyBypassMark); err != nil {
+		return false
+	}
+	return true
+}
 
 func writeTestCerts(t *testing.T, serverName string) (string, string, []byte) {
 	t.Helper()
@@ -89,6 +105,9 @@ func TestTLSTunnel(t *testing.T) {
 	}
 	if os.Geteuid() != 0 {
 		t.Skip("skipping TLS tunnel test; requires root for SO_MARK")
+	}
+	if !canSetSocketMark() {
+		t.Skip("skipping TLS tunnel test; cannot set SO_MARK")
 	}
 	secret := "s0cr2t"
 	serverName := "s.example.com"

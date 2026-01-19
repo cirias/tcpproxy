@@ -31,6 +31,9 @@ func TestTun(t *testing.T) {
 	if os.Geteuid() != 0 {
 		t.Skip("skipping tun integration test; requires root")
 	}
+	if _, err := os.Stat("/dev/net/tun"); err != nil {
+		t.Skip("skipping tun integration test; /dev/net/tun unavailable")
+	}
 	tun, err := wgtun.CreateTUN("", 1420)
 	if err != nil {
 		t.Fatal(err)

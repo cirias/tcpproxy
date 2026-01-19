@@ -84,6 +84,12 @@ func writeTestCerts(t *testing.T, serverName string) (string, string, []byte) {
 }
 
 func TestTLSTunnel(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping TLS tunnel test in short mode")
+	}
+	if os.Geteuid() != 0 {
+		t.Skip("skipping TLS tunnel test; requires root for SO_MARK")
+	}
 	secret := "s0cr2t"
 	serverName := "s.example.com"
 	certFile, keyFile, caCertPEMBlock := writeTestCerts(t, serverName)

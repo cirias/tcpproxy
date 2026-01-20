@@ -663,7 +663,7 @@ func dumpDNSMessage(ipv4 tcpip.IPv4Packet) {
 		glog.V(2).Infof("could not parse dns questions: %s", err)
 	} else {
 		for _, question := range questions {
-			glog.V(2).Infof(question.GoString())
+			glog.V(2).Infof("%s", question.GoString())
 		}
 	}
 
@@ -672,7 +672,7 @@ func dumpDNSMessage(ipv4 tcpip.IPv4Packet) {
 		glog.V(2).Infof("could not parse dns answers: %s", err)
 	} else {
 		for _, answer := range answers {
-			glog.V(2).Infof(answer.GoString())
+			glog.V(2).Infof("%s", answer.GoString())
 		}
 	}
 }

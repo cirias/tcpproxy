@@ -1,6 +1,7 @@
 package transport
 
 import (
+	"context"
 	"encoding/binary"
 	"fmt"
 	"net"
@@ -53,7 +54,7 @@ func TestTun(t *testing.T) {
 	ipListener := NewTUNIPListener(tun)
 
 	go func() {
-		if err := TUNReadPacketsRoutine(tun, tcpListener, ipListener); err != nil {
+		if err := TUNReadPacketsRoutine(context.Background(), tun, tcpListener, ipListener); err != nil {
 			fmt.Println(err)
 		}
 	}()

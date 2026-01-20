@@ -42,3 +42,7 @@ func GetOriginalDestination(conn net.Conn) (*net.TCPAddr, error) {
 
 	return dest, nil
 }
+
+func SetSocketMark(fd int, mark int) error {
+	return syscall.SetsockoptInt(fd, syscall.SOL_SOCKET, syscall.SO_MARK, mark)
+}

@@ -38,7 +38,7 @@ func NewTCPDialer(secret, laddr, raddr string) (*TunnelDialer, error) {
 		Control: func(_, _ string, c syscall.RawConn) error {
 			var sockErr error
 			err := c.Control(func(fd uintptr) {
-				sockErr = syscall.SetsockoptInt(int(fd), syscall.SOL_SOCKET, syscall.SO_MARK, tcpproxyBypassMark)
+				sockErr = SetSocketMark(int(fd), tcpproxyBypassMark)
 			})
 			if sockErr != nil {
 				return sockErr

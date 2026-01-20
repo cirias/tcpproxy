@@ -65,12 +65,13 @@ func (rt *RoundTripper) RoundTrip(ctx context.Context) error {
 					return fmt.Errorf("could not accept connection from listener %s: %w", l.Addr(), err)
 				}
 
-				go func() {
+				g.Go(func() error {
 					defer h.Close()
 					if err := rt.handle(h); err != nil && !errors.Is(err, io.EOF) {
 						glog.Errorln(err)
 					}
-				}()
+					return nil
+				})
 			}
 		})
 	}

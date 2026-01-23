@@ -395,16 +395,16 @@ func (r *PacketReader) Read(p []byte, offset int) (int, error) {
 func NewTUNIPDialer(tun tun.Device) *TUNIPDialer {
 	// glog.Infof("created TUN IP dialer on %s", t.name)
 	return &TUNIPDialer{
-		tun:    tun,
-		ipToCh: make(map[netip.Addr]chan *PacketBuf),
+		tun:       tun,
+		ipToGroup: make(map[netip.Addr]*TUNIPDailerConnGroup),
 	}
 }
 
 type TUNIPDialer struct {
 	tun tun.Device
 
-	ipToChMutex sync.RWMutex
-	ipToCh      map[netip.Addr]chan *PacketBuf
+	mutex     sync.RWMutex
+	ipToGroup map[netip.Addr]*TUNIPDailerConnGroup
 
 	addr net.Addr
 }
@@ -438,16 +438,31 @@ func (d *TUNIPDialer) ReadPacketsRoutine(ctx context.Context) error {
 
 		dstip, _ := netip.AddrFromSlice(ip4.DstIP())
 
-		d.ipToChMutex.RLock()
-		ch, ok := d.ipToCh[dstip]
-		d.ipToChMutex.RUnlock()
+		d.mutex.Lock()
+		group, ok := d.ipToGroup[dstip]
 		if !ok {
+			d.mutex.Unlock()
 			releaseBuffer(buf)
 			glog.Warningf("Unknown destination of packet: %s", dstip)
 			continue
 		}
 
-		ch <- buf
+		if group.size() == 0 {
+			delete(d.ipToGroup, dstip)
+			close(group.ch)
+			d.mutex.Unlock()
+			releaseBuffer(buf)
+			glog.Infof("closed TUNDialerConnGroup for client %s", dstip)
+			continue
+		}
+		d.mutex.Unlock()
+
+		select {
+		case group.ch <- buf:
+		default:
+			releaseBuffer(buf)
+			glog.Warningf("Dropped packet for %s (buffer full)", dstip)
+		}
 	}
 }
 
@@ -458,10 +473,9 @@ func (d *TUNIPDialer) Dial(raddr net.Addr) (net.Conn, error) {
 	}
 
 	conn := &TUNIPDialerConn{
-		tun:         d.tun,
-		initialized: make(chan struct{}),
-		ipToChMutex: &d.ipToChMutex,
-		ipToCh:      d.ipToCh,
+		dialer: d,
+		done:   make(chan struct{}),
+		readCh: make(chan *PacketBuf),
 	}
 
 	return &TUNIPConn{
@@ -472,56 +486,110 @@ func (d *TUNIPDialer) Dial(raddr net.Addr) (net.Conn, error) {
 	}, nil
 }
 
+func (d *TUNIPDialer) delConn(c *TUNIPDialerConn) {
+	d.mutex.Lock()
+	defer d.mutex.Unlock()
+
+	if c.clientIP == nil {
+		// conn has not been added to the dialer group yet
+		return
+	}
+
+	group, ok := d.ipToGroup[*c.clientIP]
+	if ok {
+		delete(group.conns, c)
+	}
+	c.closed = true
+}
+
+func (d *TUNIPDialer) addConn(clientIP netip.Addr, c *TUNIPDialerConn) {
+	d.mutex.Lock()
+	defer d.mutex.Unlock()
+
+	if c.closed {
+		return
+	}
+
+	c.clientIP = &clientIP
+
+	group, ok := d.ipToGroup[clientIP]
+	if !ok {
+		group = &TUNIPDailerConnGroup{
+			ch:    make(chan *PacketBuf, 1024), // whole_buffer_size = packet_buf_size * chan_size = 2048 * 1024 = 2MB
+			conns: make(map[*TUNIPDialerConn]struct{}),
+		}
+		d.ipToGroup[clientIP] = group
+	}
+	go func() {
+		var buf *PacketBuf
+		var ok bool
+
+		for {
+			select {
+			case <-c.done:
+				return
+			case buf, ok = <-group.ch:
+				if !ok {
+					return
+				}
+			}
+			select {
+			case <-c.done:
+				releaseBuffer(buf)
+				return
+			case c.readCh <- buf:
+			}
+		}
+	}()
+	group.conns[c] = struct{}{}
+}
+
+type TUNIPDailerConnGroup struct {
+	ch    chan *PacketBuf
+	conns map[*TUNIPDialerConn]struct{}
+}
+
+func (g *TUNIPDailerConnGroup) size() int {
+	return len(g.conns)
+}
+
 type TUNIPDialerConn struct {
-	tun       tun.Device
+	dialer    *TUNIPDialer
 	writeOnce sync.Once
-	closeOnce sync.Once
-
-	ipToChMutex *sync.RWMutex
-	ipToCh      map[netip.Addr]chan *PacketBuf
-
-	initialized chan struct{}
-
-	// below are readable after initialized
-	firstSrcIP netip.Addr
-	readCh     <-chan *PacketBuf
+	done      chan struct{}
+	readCh    chan *PacketBuf
+	closed    bool
+	clientIP  *netip.Addr
 }
 
 func (c *TUNIPDialerConn) Close() error {
-	<-c.initialized
+	close(c.done)
 
-	c.closeOnce.Do(func() {
-		c.ipToChMutex.Lock()
-		ch, ok := c.ipToCh[c.firstSrcIP]
-		if ok && ch == c.readCh {
-			glog.Infof("closing its own read chan of client %s", c.firstSrcIP)
-			delete(c.ipToCh, c.firstSrcIP)
-			close(ch)
-		}
-		c.ipToChMutex.Unlock()
-	})
+	c.dialer.delConn(c)
 
 	return nil
 }
 
 func (c *TUNIPDialerConn) Read(p []byte, offset int) (int, error) {
-	<-c.initialized
-
-	buf, ok := <-c.readCh
-	if !ok {
+	select {
+	case <-c.done:
 		return 0, io.EOF
+	case buf, ok := <-c.readCh:
+		if !ok {
+			return 0, io.EOF
+		}
+		defer releaseBuffer(buf)
+		n := copy(p[offset:], buf.PacketBytes())
+		return n, nil
 	}
-	defer releaseBuffer(buf)
-
-	n := copy(p[offset:], buf.PacketBytes())
-	return n, nil
 }
 
+// Write send an IP packet to the local tun interface.
+// The method is usually called at the server side.
+// The written packet is usually read from the tunnel sent by the client.
 func (c *TUNIPDialerConn) Write(b []byte, offset int) (int, error) {
 	var err error
 	c.writeOnce.Do(func() {
-		defer close(c.initialized)
-
 		ip := tcpip.IPPacket(b[offset:])
 		ip4 := ip.IPv4Packet()
 		if ip4 == nil {
@@ -529,25 +597,16 @@ func (c *TUNIPDialerConn) Write(b []byte, offset int) (int, error) {
 			return
 		}
 
-		c.firstSrcIP, _ = netip.AddrFromSlice(ip4.SrcIP())
+		// client ip address of the virtual network
+		srcIP, _ := netip.AddrFromSlice(ip4.SrcIP())
 
-		readCh := make(chan *PacketBuf)
-		c.readCh = readCh
-
-		c.ipToChMutex.Lock()
-		ch, ok := c.ipToCh[c.firstSrcIP]
-		if ok {
-			glog.Infof("closing the remaining read chan of client %s", c.firstSrcIP)
-			close(ch)
-		}
-		c.ipToCh[c.firstSrcIP] = readCh
-		c.ipToChMutex.Unlock()
+		c.dialer.addConn(srcIP, c)
 	})
 	if err != nil {
 		return 0, err
 	}
 
-	return c.tun.Write(b, offset)
+	return c.dialer.tun.Write(b, offset)
 }
 
 type TUNIPConn struct {

@@ -1,42 +1,78 @@
 package transport
 
 import (
+	"crypto/rand"
+	"crypto/rsa"
+	"crypto/x509"
+	"crypto/x509/pkix"
+	"encoding/pem"
 	"log"
+	"math/big"
 	"net"
+	"os"
+	"path/filepath"
 	"testing"
+	"time"
 )
+
+func generateTestCert(t *testing.T, dir string) (string, string, []byte) {
+	priv, err := rsa.GenerateKey(rand.Reader, 2048)
+	if err != nil {
+		t.Fatalf("failed to generate private key: %v", err)
+	}
+
+	template := x509.Certificate{
+		SerialNumber: big.NewInt(1),
+		Subject: pkix.Name{
+			Organization: []string{"Test Org"},
+			CommonName:   "s.example.com",
+		},
+		NotBefore: time.Now(),
+		NotAfter:  time.Now().Add(time.Hour),
+
+		KeyUsage:              x509.KeyUsageKeyEncipherment | x509.KeyUsageDigitalSignature,
+		ExtKeyUsage:           []x509.ExtKeyUsage{x509.ExtKeyUsageServerAuth},
+		BasicConstraintsValid: true,
+		DNSNames:              []string{"s.example.com"},
+	}
+
+	derBytes, err := x509.CreateCertificate(rand.Reader, &template, &template, &priv.PublicKey, priv)
+	if err != nil {
+		t.Fatalf("Failed to create certificate: %v", err)
+	}
+
+	certPath := filepath.Join(dir, "server_cert.pem")
+	certOut, err := os.Create(certPath)
+	if err != nil {
+		t.Fatalf("Failed to open cert.pem for writing: %v", err)
+	}
+	pem.Encode(certOut, &pem.Block{Type: "CERTIFICATE", Bytes: derBytes})
+	certOut.Close()
+
+	keyPath := filepath.Join(dir, "server_key.pem")
+	keyOut, err := os.Create(keyPath)
+	if err != nil {
+		t.Fatalf("Failed to open key.pem for writing: %v", err)
+	}
+	privBytes := x509.MarshalPKCS1PrivateKey(priv)
+	pem.Encode(keyOut, &pem.Block{Type: "RSA PRIVATE KEY", Bytes: privBytes})
+	keyOut.Close()
+
+	caCertPEM := pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: derBytes})
+
+	return certPath, keyPath, caCertPEM
+}
 
 func TestTLSTunnel(t *testing.T) {
 	secret := "s0cr2t"
-	caCertPEMBlock := []byte(`
------BEGIN CERTIFICATE-----
-MIIDlTCCAn2gAwIBAgIUIVxAyAzPAkMUEMfGnFSBE5HqQ64wDQYJKoZIhvcNAQEL
-BQAwWTELMAkGA1UEBhMCVVMxCzAJBgNVBAgMAkNBMRIwEAYDVQQHDAlTb21ld2hl
-cmUxEDAOBgNVBAoMB1NvbWVvbmUxFzAVBgNVBAMMDmNhLmV4YW1wbGUuY29tMCAX
-DTIxMTIwNDEwMDgwOVoYDzIxMjExMTEwMTAwODA5WjBZMQswCQYDVQQGEwJVUzEL
-MAkGA1UECAwCQ0ExEjAQBgNVBAcMCVNvbWV3aGVyZTEQMA4GA1UECgwHU29tZW9u
-ZTEXMBUGA1UEAwwOY2EuZXhhbXBsZS5jb20wggEiMA0GCSqGSIb3DQEBAQUAA4IB
-DwAwggEKAoIBAQDUdvAj2Xjl0MfxjuRLA0/0bK0aqiBNwrNf9zEGbKKLSZZgd0Ms
-I+jzdeG3pZ65g/a3jwIU2TN2U7Lu3UzhZGl3JBGzblVxobFNWhIbzshQW+ASRPBl
-F54dj/pweGrHrRXCmMgW5spYOm3Zf3uhLUTcpUhRNOwLKygixcanyatniTLycwXE
-GpaNaN6eS3L9rO7xpktfGxhTf8vrBHI9Y3uECix0fU66zEsz22lMmpbriOM+EVhS
-aXdaqOsBfj3ibx8PyBxOgh13sp9Mp1YGvXjOQzBYBXiWoRe6SYyvHoY1BfTHEc7a
-n/oP377gjgcHEVSgIUFjGPC3W+87pTO7CPD3AgMBAAGjUzBRMB0GA1UdDgQWBBQB
-bJL0bAiCtErxBgufKn3PlWVEyTAfBgNVHSMEGDAWgBQBbJL0bAiCtErxBgufKn3P
-lWVEyTAPBgNVHRMBAf8EBTADAQH/MA0GCSqGSIb3DQEBCwUAA4IBAQBNiMzLPQb/
-tZ2NrL4hFBvomrqIryNrtoMddj/Uj2bC+j0svPte5WGCsp11n3SB/463gm31bClu
-noz18olLjfEDQPxKJVqXEcUzjoKYmW/6yGF2CwAjlwPSnWTWp/yj7/rOD+58fpOW
-T0Yqx9NfAIcDHMmqO2IGyl4qbqms/IgewcEf0W9fOPyt9QrLy8UGQnspE79vIBNh
-JaHRQVIC9TUoRMmCaVrxh5Bl3mf6a4v3UmumxgYFsDOAt4oHy/50hhq6yLfXnQvh
-nDQTCWb4eEHJML1mpEVnD7IqFwpofPgRttkmR0h03t3q+n7qj2+z7u8aa54nur9I
-GuCElY3+yMK/
------END CERTIFICATE-----
-  `)
+	tmpDir := t.TempDir()
+	certPath, keyPath, caCertPEMBlock := generateTestCert(t, tmpDir)
 
-	listener, err := ListenTLSTunnelWithCert(secret, "", "", "test/ssl/server_cert.pem", "test/ssl/server_key.pem", "")
+	listener, err := ListenTLSTunnelWithCert(secret, "", "", certPath, keyPath, "")
 	if err != nil {
 		t.Fatal(err)
 	}
+	defer listener.Close()
 
 	dialer, err := NewTLSTunnelDialerWithCert(secret, "", listener.Addr().String(), "s.example.com", caCertPEMBlock)
 	if err != nil {
@@ -54,6 +90,7 @@ GuCElY3+yMK/
 		if err != nil {
 			log.Fatal(err)
 		}
+		defer conn.Close()
 
 		if _, err := conn.Write([]byte(testTexts[0])); err != nil {
 			log.Fatal(err)
@@ -78,6 +115,8 @@ GuCElY3+yMK/
 	if err != nil {
 		t.Fatal(err)
 	}
+	defer conn.Close()
+
 	if raddr.Network() != testAddr.Network() {
 		t.Fatal("wrong handshake raddr network", raddr.Network())
 	}

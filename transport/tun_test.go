@@ -19,7 +19,7 @@ import (
 
 const (
 	tunAddr       = "192.168.200.1/24"
-	proxyNet      = "192.168.200.128/25"
+	clientMockIP  = "192.168.200.128"
 	tunRouteTable = "400"
 )
 
@@ -46,7 +46,7 @@ func TestTun(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	tcpListener, err := NewTUNTCPListener(tun, tunAddr, proxyNet, 12345)
+	tcpListener, err := NewTUNTCPListener(tun, tunAddr, clientMockIP, 12345)
 	if err != nil {
 		t.Fatal(err)
 	}

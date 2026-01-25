@@ -1,4 +1,4 @@
-.PHONY: build docker_image docker_run server client gdb_client
+.PHONY: build docker_image test_tun_docker server client gdb_client
 
 build:
 	CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build ./cmd/tproxyt
@@ -10,11 +10,11 @@ transport.test: ./transport/*.go
 test_tun:
 	./transport.test -test.run TestTun -logtostderr
 
+test_tun_docker: docker_image
+	docker run --rm -it --cap-add NET_ADMIN -v $(shell pwd):/app -w /app tproxy go test -v -run TestTun ./transport
+
 docker_image:
 	docker build ./docker -t tproxy
-
-docker_run:
-	docker run --rm -it --cap-add NET_ADMIN -v /usr/lib/go:/usr/lib/go:ro -v $(shell pwd)/.gdbinit:/root/.gdbinit -v $(shell pwd):/app -w /app tproxy bash
 
 server:
 	./tproxyt -logtostderr -v 1 -mode server -cacert ssl/ca_cert.pem -cert ssl/server_cert.pem -key ssl/server_key.pem -secret milk -tunip 192.168.200.1/24

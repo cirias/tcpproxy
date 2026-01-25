@@ -64,18 +64,18 @@ func TUNReadPacketsRoutine(ctx context.Context, tun tun.Device, tcpl *TUNTCPList
 	}
 }
 
-func NewTUNTCPListener(tun tun.Device, tunAddr, clientMockIPAddr string, lport int) (*TUNTCPListener, error) {
+func NewTUNTCPListener(tun tun.Device, tunAddr, virtualClientIPAddr string, lport int) (*TUNTCPListener, error) {
 	tunIP, tunIPNet, err := net.ParseCIDR(tunAddr)
 	if err != nil {
 		return nil, fmt.Errorf("could not parse tunAddr: %w", err)
 	}
 
-	clientMockIP := net.ParseIP(clientMockIPAddr)
-	if clientMockIP == nil {
-		return nil, fmt.Errorf("could not parse clientMockIPAddr: %w", err)
+	virtualClientIP := net.ParseIP(virtualClientIPAddr)
+	if virtualClientIP == nil {
+		return nil, fmt.Errorf("could not parse virtualClientIPAddr: %w", err)
 	}
-	if !tunIPNet.Contains(clientMockIP) {
-		return nil, fmt.Errorf("clientMockIPAddr is not within range of tunAddr")
+	if !tunIPNet.Contains(virtualClientIP) {
+		return nil, fmt.Errorf("virtualClientIPAddr is not within range of tunAddr")
 	}
 
 	laddr := &net.TCPAddr{
@@ -86,14 +86,14 @@ func NewTUNTCPListener(tun tun.Device, tunAddr, clientMockIPAddr string, lport i
 	if err != nil {
 		return nil, fmt.Errorf("could not create TCP listener: %w", err)
 	}
-	glog.Infof("created TUN TCP listener, clientMockIP=%s laddr=%s", clientMockIP, listener.Addr())
+	glog.Infof("created TUN TCP listener, virtualClientIP=%s laddr=%s", virtualClientIP, listener.Addr())
 
 	l := &TUNTCPListener{
 		listener: listener,
 		tun:      tun,
 		tunIP:    tunIP,
 
-		clientMockIP: clientMockIP,
+		virtualClientIP: virtualClientIP,
 
 		pktCh: make(chan *PacketBuf, 0),
 	}
@@ -114,7 +114,7 @@ type TUNTCPListener struct {
 
 	listener net.Listener
 
-	clientMockIP net.IP
+	virtualClientIP net.IP
 
 	clientPortToDstAddr      [1 << 16]netip.AddrPort // 2M bytes on 64bit, 1536K bytes on 32bit
 	clientPortToDstAddrMutex sync.RWMutex
@@ -208,7 +208,7 @@ func (l *TUNTCPListener) mapOneTCPPacket(buf *PacketBuf) error {
 	srcPort := tcp.SrcPort()
 	dstPort := tcp.DstPort()
 
-	if dstIP.Equal(l.clientMockIP) && srcIP.Equal(laddr.IP) && int(srcPort) == laddr.Port {
+	if dstIP.Equal(l.virtualClientIP) && srcIP.Equal(laddr.IP) && int(srcPort) == laddr.Port {
 		// translate packets came from TCP server
 		// NOTE: l.tunIP and laddr.IP are the same
 
@@ -240,7 +240,7 @@ func (l *TUNTCPListener) mapOneTCPPacket(buf *PacketBuf) error {
 			}
 		}
 
-		ip4.SetSrcIP(l.clientMockIP)
+		ip4.SetSrcIP(l.virtualClientIP)
 		ip4.SetDstIP(laddr.IP)
 		tcp.SetDstPort(uint16(laddr.Port))
 	}

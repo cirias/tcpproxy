@@ -39,7 +39,7 @@ var timeout = flag.Duration("timeout", 0, "connection timeout (default 1h)")
 // client
 var raddr = flag.String("raddr", "", "remote connecting address")
 var sname = flag.String("sname", "", "TLS server name")
-var tunmockip = flag.String("tunmockip", "", "TUN device mock IP for TCP")
+var tunvirtualip = flag.String("tunvirtualip", "", "TUN device virtual client IP for TCP")
 var tunproxyport = flag.Int("tunproxyport", 0, "TUN device proxy port that TCP server bind to")
 var snihosts = flag.String("snihosts", "", "path of the sni hosts list file")
 
@@ -170,7 +170,7 @@ func client(tun wgtun.Device) error {
 	var tunTCPListener *transport.TUNTCPListener
 	if *tunproxyport != 0 {
 		var err error
-		tunTCPListener, err = transport.NewTUNTCPListener(tun, *tunip, *tunmockip, *tunproxyport)
+		tunTCPListener, err = transport.NewTUNTCPListener(tun, *tunip, *tunvirtualip, *tunproxyport)
 		if err != nil {
 			return err
 		}

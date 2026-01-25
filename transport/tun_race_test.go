@@ -7,6 +7,7 @@ import (
 	"io"
 	"net"
 	"os"
+	"sync"
 	"testing"
 	"time"
 
@@ -63,9 +64,9 @@ func (m *mockTun) Write(buf []byte, offset int) (int, error) {
 	}
 }
 
-func (m *mockTun) Flush() error { return nil }
-func (m *mockTun) MTU() (int, error) { return 1420, nil }
-func (m *mockTun) Name() (string, error) { return "mocktun", nil }
+func (m *mockTun) Flush() error           { return nil }
+func (m *mockTun) MTU() (int, error)      { return 1420, nil }
+func (m *mockTun) Name() (string, error)  { return "mocktun", nil }
 func (m *mockTun) Events() chan tun.Event { return m.events }
 func (m *mockTun) Close() error {
 	close(m.closed)
@@ -86,7 +87,7 @@ func createIPv4Packet(src, dst net.IP, payload []byte) []byte {
 	// Checksum ignored by basic logic usually
 	copy(hdr[12:16], src.To4())
 	copy(hdr[16:20], dst.To4())
-	
+
 	return append(hdr, payload...)
 }
 
@@ -114,7 +115,7 @@ func TestTUNIPDialer_RaceAndDeadlock(t *testing.T) {
 
 	// Trigger the "addConn" logic by writing a packet OUT to the TUN
 	packetOut := createIPv4Packet(clientIP, serverIP, []byte("hello"))
-	
+
 	// Add TUNIPConn framing (Length + Reserved)
 	framedOut := make([]byte, 4+len(packetOut))
 	binary.BigEndian.PutUint16(framedOut[:2], uint16(len(packetOut)))
@@ -126,11 +127,11 @@ func TestTUNIPDialer_RaceAndDeadlock(t *testing.T) {
 	}
 
 	// Now the mapping should be established: DST=192.168.1.10 -> conn
-	
+
 	// 2. Verify we can receive packets
 	packetIn := createIPv4Packet(serverIP, clientIP, []byte("response"))
 	mt.readCh <- packetIn
-	
+
 	buf := make([]byte, 1500)
 	n, err := conn.Read(buf)
 	if err != nil {
@@ -148,30 +149,30 @@ func TestTUNIPDialer_RaceAndDeadlock(t *testing.T) {
 			mt.readCh <- createIPv4Packet(serverIP, clientIP, []byte("flood"))
 		}
 	}()
-	
+
 	time.Sleep(10 * time.Millisecond) // Let some packets flow
-	conn.Close() // Should not panic
-	
+	conn.Close()                      // Should not panic
+
 	// 4. Test Deadlock / Blocking
 	// Now that conn is closed, packets to 192.168.1.10 should be dropped or ignored.
 	// But more importantly, ReadPacketsRoutine should continue processing OTHER traffic.
-	
+
 	// Create a NEW connection for a different IP
 	clientIP2 := net.ParseIP("192.168.1.11")
 	conn2, _ := dialer.Dial(&net.TCPAddr{IP: clientIP2, Port: 1234})
-	
+
 	// Initialize mapping for conn2
 	packetOut2 := createIPv4Packet(clientIP2, serverIP, []byte("init2"))
 	framedOut2 := make([]byte, 4+len(packetOut2))
 	binary.BigEndian.PutUint16(framedOut2[:2], uint16(len(packetOut2)))
 	copy(framedOut2[4:], packetOut2)
 	conn2.Write(framedOut2)
-	
+
 	// Send packet to conn2
 	packetIn2 := createIPv4Packet(serverIP, clientIP2, []byte("response2"))
-	
+
 	mt.readCh <- packetIn2
-	
+
 	// Actually we expect the next read to be the response
 	n, err = conn2.Read(buf)
 	if err != nil {
@@ -195,7 +196,7 @@ func TestTUNIPDialer_BufferOverflow(t *testing.T) {
 	serverIP := net.ParseIP("10.0.0.1")
 
 	conn, _ := dialer.Dial(&net.TCPAddr{IP: clientIP})
-	
+
 	packetOut := createIPv4Packet(clientIP, serverIP, []byte("init"))
 	framedOut := make([]byte, 4+len(packetOut))
 	binary.BigEndian.PutUint16(framedOut[:2], uint16(len(packetOut)))
@@ -204,7 +205,7 @@ func TestTUNIPDialer_BufferOverflow(t *testing.T) {
 
 	// We do NOT read from conn.
 	// We flood > 1024 packets.
-	
+
 	done := make(chan bool)
 	go func() {
 		for i := 0; i < 1500; i++ {
@@ -279,7 +280,7 @@ func TestTUNIPDialer_MultipleConnsSameIP(t *testing.T) {
 
 	receivedCount := 0
 	timeout := time.After(2 * time.Second)
-	
+
 	// Expect 20 successful packets
 	for receivedCount < numPackets {
 		select {
@@ -296,17 +297,17 @@ func TestTUNIPDialer_MultipleConnsSameIP(t *testing.T) {
 
 	// 3. Close conn1 and ensure conn2 gets subsequent packets
 	conn1.Close()
-	
+
 	// Wait for conn1 closure to propagate (optional, but good for stability)
 	// reader(conn1) should return error
 	// We might receive an error from conn1 in results channel, ignore it.
 
 	mt.readCh <- createIPv4Packet(serverIP, clientIP, []byte("final"))
-	
+
 	// We expect "final" from conn2 (id=2)
 	timeout = time.After(2 * time.Second)
 	foundFinal := false
-	
+
 	for !foundFinal {
 		select {
 		case res := <-results:
@@ -323,6 +324,41 @@ func TestTUNIPDialer_MultipleConnsSameIP(t *testing.T) {
 			t.Fatalf("Timed out waiting for 'final' packet")
 		}
 	}
-	
+
 	conn2.Close()
+}
+
+func TestTUNIPDialer_ConcurrentClose(t *testing.T) {
+	mt := newMockTun()
+	dialer := NewTUNIPDialer(mt)
+
+	clientIP := net.ParseIP("192.168.1.10")
+	serverIP := net.ParseIP("10.0.0.1")
+	conn, err := dialer.Dial(&net.TCPAddr{IP: clientIP})
+	if err != nil {
+		t.Fatalf("Dial failed: %v", err)
+	}
+
+	// Trigger addConn by writing a packet.
+	// This starts a goroutine in the dialer that listens on c.done.
+	packetOut := createIPv4Packet(clientIP, serverIP, []byte("hello"))
+	framedOut := make([]byte, 4+len(packetOut))
+	binary.BigEndian.PutUint16(framedOut[:2], uint16(len(packetOut)))
+	copy(framedOut[4:], packetOut)
+
+	if _, err := conn.Write(framedOut); err != nil {
+		t.Fatalf("conn.Write failed: %v", err)
+	}
+
+	// Call Close concurrently many times.
+	// This ensures both the channel closing and the removal from group.conns are safe.
+	var wg sync.WaitGroup
+	for i := 0; i < 100; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			conn.Close()
+		}()
+	}
+	wg.Wait()
 }

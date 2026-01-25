@@ -490,6 +490,11 @@ func (d *TUNIPDialer) delConn(c *TUNIPDialerConn) {
 	d.mutex.Lock()
 	defer d.mutex.Unlock()
 
+	if !c.closed {
+		close(c.done)
+		c.closed = true
+	}
+
 	if c.clientIP == nil {
 		// conn has not been added to the dialer group yet
 		return
@@ -499,7 +504,6 @@ func (d *TUNIPDialer) delConn(c *TUNIPDialerConn) {
 	if ok {
 		delete(group.conns, c)
 	}
-	c.closed = true
 }
 
 func (d *TUNIPDialer) addConn(clientIP netip.Addr, c *TUNIPDialerConn) {
@@ -563,7 +567,6 @@ type TUNIPDialerConn struct {
 }
 
 func (c *TUNIPDialerConn) Close() error {
-	close(c.done)
 
 	c.dialer.delConn(c)
 

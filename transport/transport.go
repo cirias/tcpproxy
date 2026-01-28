@@ -6,7 +6,9 @@ import (
 	"fmt"
 	"io"
 	"net"
+	"os"
 	"sync"
+	"syscall"
 	"time"
 
 	"golang.org/x/sync/errgroup"
@@ -66,9 +68,14 @@ func (rt *RoundTripper) RoundTrip(ctx context.Context) error {
 				}
 
 				g.Go(func() error {
+					ConnTotal.Add(1)
+					ConnActive.Add(1)
+					defer ConnActive.Add(-1)
 					defer h.Close()
-					if err := rt.handle(h); err != nil && !errors.Is(err, io.EOF) {
+					if err := rt.handle(h); err != nil && !isBenignError(err) {
 						glog.Errorln(err)
+					} else if err != nil {
+						NetErrors.Add(1)
 					}
 					return nil
 				})
@@ -76,6 +83,34 @@ func (rt *RoundTripper) RoundTrip(ctx context.Context) error {
 		})
 	}
 	return g.Wait()
+}
+
+func isBenignError(err error) bool {
+	if err == nil {
+		return true
+	}
+	if errors.Is(err, io.EOF) || errors.Is(err, io.ErrUnexpectedEOF) || errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+		return true
+	}
+	if errors.Is(err, net.ErrClosed) {
+		return true
+	}
+	// Check for common network errors that are expected during normal operation
+	var opErr *net.OpError
+	if errors.As(err, &opErr) {
+		if opErr.Timeout() {
+			return true
+		}
+		var syscallErr *os.SyscallError
+		if errors.As(opErr.Err, &syscallErr) {
+			if errors.Is(syscallErr.Err, syscall.ECONNRESET) ||
+				errors.Is(syscallErr.Err, syscall.EPIPE) ||
+				errors.Is(syscallErr.Err, syscall.ETIMEDOUT) {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 func (rt *RoundTripper) handle(handshaker Handshaker) error {
@@ -96,6 +131,8 @@ func (rt *RoundTripper) handle(handshaker Handshaker) error {
 	var tx, rx int64
 	defer func() {
 		glog.Infof("connection closed [%s <-> %s] duration=%s tx=%d rx=%d", handshaker.RemoteAddr(), raddr, time.Since(start), tx, rx)
+		BytesTX.Add(tx)
+		BytesRX.Add(rx)
 	}()
 
 	errOnce := sync.Once{}

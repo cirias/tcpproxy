@@ -7,6 +7,7 @@ import (
 	"io"
 	"net"
 	"sync"
+	"syscall"
 	"time"
 
 	"golang.org/x/sync/errgroup"
@@ -67,8 +68,12 @@ func (rt *RoundTripper) RoundTrip(ctx context.Context) error {
 
 				g.Go(func() error {
 					defer h.Close()
-					if err := rt.handle(h); err != nil && !errors.Is(err, io.EOF) {
-						glog.Errorln(err)
+					if err := rt.handle(h); err != nil {
+						if isNormalTerminationError(err) {
+							glog.Infoln(err)
+						} else {
+							glog.Errorln(err)
+						}
 					}
 					return nil
 				})
@@ -166,4 +171,25 @@ func copyConn(prefix string, i, o net.Conn, timeout time.Duration) (int64, error
 		}
 		total += int64(m)
 	}
+}
+
+func isNormalTerminationError(err error) bool {
+	if errors.Is(err, io.EOF) || errors.Is(err, context.Canceled) || errors.Is(err, net.ErrClosed) {
+		return true
+	}
+	var syscallErr syscall.Errno
+	if errors.As(err, &syscallErr) {
+		if syscallErr == syscall.ECONNRESET || syscallErr == syscall.EPIPE {
+			return true
+		}
+	}
+	var opErr *net.OpError
+	if errors.As(err, &opErr) {
+		if errors.As(opErr.Err, &syscallErr) {
+			if syscallErr == syscall.ECONNRESET || syscallErr == syscall.EPIPE {
+				return true
+			}
+		}
+	}
+	return false
 }
